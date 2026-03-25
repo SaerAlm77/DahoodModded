@@ -1,0 +1,1552 @@
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local Workspace = game:GetService("Workspace")
+
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+local Camera = Workspace.CurrentCamera
+
+local GUI_NAME = "HoodHubGui"
+
+local LOCK_KEY = Enum.KeyCode.Q
+local MACRO_KEY = Enum.KeyCode.F
+local MACRO_SPEED = 45
+
+local lockEnabled = false
+local currentTarget = nil
+local selectedPlayer = nil
+local listeningForKey = false
+local listeningForMacroKey = false
+local macroHeld = false
+
+local targetBillboard = nil
+local billboardSpinConnection = nil
+local macroConnection = nil
+local organiserConnections = {}
+local spawnSelectionConnection = nil
+local spawnCancelConnection = nil
+local spawnConfirmConnection = nil
+local spawnMarker = nil
+local spawnSelecting = false
+local selectedSpawnPosition = nil
+local inventoryAutoEnabled = false
+local inventoryToolStates = {}
+local organiseQueued = false
+local currentPage = "Quick Lock"
+
+local colors = {
+	Background = Color3.fromRGB(8, 10, 16),
+	Panel = Color3.fromRGB(13, 16, 24),
+	Panel2 = Color3.fromRGB(18, 22, 32),
+	Card = Color3.fromRGB(20, 24, 36),
+	CardHover = Color3.fromRGB(28, 33, 46),
+	Stroke = Color3.fromRGB(42, 49, 69),
+	Text = Color3.fromRGB(245, 247, 255),
+	Muted = Color3.fromRGB(155, 163, 180),
+	Accent = Color3.fromRGB(110, 92, 255),
+	Accent2 = Color3.fromRGB(86, 139, 255),
+	Green = Color3.fromRGB(66, 185, 116),
+	Red = Color3.fromRGB(235, 76, 76),
+	Yellow = Color3.fromRGB(255, 190, 70)
+}
+
+local savedSettings = {
+	Position = UDim2.new(0.5, -420, 0.5, -250),
+	Scale = 1,
+	LockKey = Enum.KeyCode.Q.Name,
+	MacroKey = Enum.KeyCode.F.Name,
+	MacroSpeed = 45,
+	InventoryAutoEnabled = false,
+	SelectedWeapons = {},
+	SpawnPosition = nil,
+	Page = "Quick Lock"
+}
+
+local existingGui = PlayerGui:FindFirstChild(GUI_NAME)
+if existingGui then
+	local oldMain = existingGui:FindFirstChild("MainFrame")
+	if oldMain then
+		savedSettings.Position = oldMain.Position
+
+		local oldScale = oldMain:FindFirstChildOfClass("UIScale")
+		if oldScale then
+			savedSettings.Scale = oldScale.Scale
+		end
+	end
+
+	local oldLockKey = existingGui:GetAttribute("LockKey")
+	if typeof(oldLockKey) == "string" and Enum.KeyCode[oldLockKey] then
+		savedSettings.LockKey = oldLockKey
+	end
+
+	local oldMacroKey = existingGui:GetAttribute("MacroKey")
+	if typeof(oldMacroKey) == "string" and Enum.KeyCode[oldMacroKey] then
+		savedSettings.MacroKey = oldMacroKey
+	end
+
+	local oldMacroSpeed = existingGui:GetAttribute("MacroSpeed")
+	if typeof(oldMacroSpeed) == "number" then
+		savedSettings.MacroSpeed = math.clamp(oldMacroSpeed, 1, 300)
+	end
+
+	local oldInventoryAuto = existingGui:GetAttribute("InventoryAutoEnabled")
+	if typeof(oldInventoryAuto) == "boolean" then
+		savedSettings.InventoryAutoEnabled = oldInventoryAuto
+	end
+
+	local savedWeapons = existingGui:GetAttribute("SelectedWeapons")
+	if typeof(savedWeapons) == "string" and savedWeapons ~= "" then
+		for toolName in string.gmatch(savedWeapons, "([^|]+)") do
+			savedSettings.SelectedWeapons[toolName] = true
+		end
+	end
+
+	local sx = existingGui:GetAttribute("SpawnX")
+	local sy = existingGui:GetAttribute("SpawnY")
+	local sz = existingGui:GetAttribute("SpawnZ")
+	if typeof(sx) == "number" and typeof(sy) == "number" and typeof(sz) == "number" then
+		savedSettings.SpawnPosition = Vector3.new(sx, sy, sz)
+	end
+
+	local oldPage = existingGui:GetAttribute("CurrentPage")
+	if typeof(oldPage) == "string" then
+		savedSettings.Page = oldPage
+	end
+
+	existingGui:Destroy()
+end
+
+if Enum.KeyCode[savedSettings.LockKey] then
+	LOCK_KEY = Enum.KeyCode[savedSettings.LockKey]
+end
+
+if Enum.KeyCode[savedSettings.MacroKey] then
+	MACRO_KEY = Enum.KeyCode[savedSettings.MacroKey]
+end
+
+MACRO_SPEED = math.clamp(savedSettings.MacroSpeed, 1, 300)
+inventoryAutoEnabled = savedSettings.InventoryAutoEnabled
+inventoryToolStates = savedSettings.SelectedWeapons
+selectedSpawnPosition = savedSettings.SpawnPosition
+currentPage = savedSettings.Page
+
+local function getCharacter(player)
+	return player and player.Character
+end
+
+local function getHumanoid(player)
+	local character = getCharacter(player)
+	return character and character:FindFirstChildOfClass("Humanoid")
+end
+
+local function getRoot(player)
+	local character = getCharacter(player)
+	return character and character:FindFirstChild("HumanoidRootPart")
+end
+
+local function getBackpack()
+	return LocalPlayer:FindFirstChildOfClass("Backpack")
+end
+
+local function isValidTarget(player)
+	if not player or player == LocalPlayer then
+		return false
+	end
+
+	local character = getCharacter(player)
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+
+	if not character or not humanoid or not root then
+		return false
+	end
+
+	if humanoid.Health <= 0 then
+		return false
+	end
+
+	return true
+end
+
+local function getMousePosition()
+	return UserInputService:GetMouseLocation()
+end
+
+local function createRound(instance, radius)
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, radius or 10)
+	corner.Parent = instance
+	return corner
+end
+
+local function createStroke(instance, color, thickness)
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = color or colors.Stroke
+	stroke.Thickness = thickness or 1
+	stroke.Parent = instance
+	return stroke
+end
+
+local function tweenButtonFlash(button, baseColor)
+	local bright = baseColor:Lerp(Color3.new(1, 1, 1), 0.1)
+	local down = TweenService:Create(button, TweenInfo.new(0.08), {
+		BackgroundColor3 = bright
+	})
+	local up = TweenService:Create(button, TweenInfo.new(0.14), {
+		BackgroundColor3 = baseColor
+	})
+	down:Play()
+	down.Completed:Connect(function()
+		up:Play()
+	end)
+end
+
+local function setGuiStoredSpawn(gui, position)
+	if position then
+		gui:SetAttribute("SpawnX", position.X)
+		gui:SetAttribute("SpawnY", position.Y)
+		gui:SetAttribute("SpawnZ", position.Z)
+	else
+		gui:SetAttribute("SpawnX", nil)
+		gui:SetAttribute("SpawnY", nil)
+		gui:SetAttribute("SpawnZ", nil)
+	end
+end
+
+local function updateSelectedWeaponsAttribute(gui)
+	local names = {}
+	for name, enabled in pairs(inventoryToolStates) do
+		if enabled then
+			table.insert(names, name)
+		end
+	end
+	table.sort(names)
+	gui:SetAttribute("SelectedWeapons", table.concat(names, "|"))
+end
+
+local function cleanupBillboard()
+	if billboardSpinConnection then
+		billboardSpinConnection:Disconnect()
+		billboardSpinConnection = nil
+	end
+
+	if targetBillboard then
+		targetBillboard:Destroy()
+		targetBillboard = nil
+	end
+end
+
+local function createLockBillboard(player)
+	cleanupBillboard()
+
+	local character = getCharacter(player)
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if not root then
+		return
+	end
+
+	local billboard = Instance.new("BillboardGui")
+	billboard.Name = "QuickLockMarker"
+	billboard.Size = UDim2.new(0, 60, 0, 60)
+	billboard.StudsOffset = Vector3.new(0, 4, 0)
+	billboard.AlwaysOnTop = true
+	billboard.Adornee = root
+	billboard.Parent = root
+
+	local image = Instance.new("ImageLabel")
+	image.Name = "SpinImage"
+	image.BackgroundTransparency = 1
+	image.Size = UDim2.fromScale(1, 1)
+	image.Image = "rbxassetid://13612969927"
+	image.Parent = billboard
+
+	targetBillboard = billboard
+
+	local spinSpeed = 80
+	billboardSpinConnection = RunService.RenderStepped:Connect(function(dt)
+		if not image or not image.Parent then
+			if billboardSpinConnection then
+				billboardSpinConnection:Disconnect()
+				billboardSpinConnection = nil
+			end
+			return
+		end
+
+		image.Rotation += spinSpeed * dt * 60
+		spinSpeed = math.max(0, spinSpeed - (70 * dt))
+
+		if spinSpeed <= 0.05 then
+			image.Rotation = image.Rotation % 360
+			if billboardSpinConnection then
+				billboardSpinConnection:Disconnect()
+				billboardSpinConnection = nil
+			end
+		end
+	end)
+end
+
+local function unlockTarget()
+	lockEnabled = false
+	currentTarget = nil
+	cleanupBillboard()
+end
+
+local function lockToTarget(player)
+	if not isValidTarget(player) then
+		return
+	end
+
+	currentTarget = player
+	lockEnabled = true
+	createLockBillboard(player)
+end
+
+local function getNearestPlayerToMouse()
+	local mousePos = getMousePosition()
+	local closestPlayer = nil
+	local closestDistance = math.huge
+
+	for _, player in ipairs(Players:GetPlayers()) do
+		if isValidTarget(player) then
+			local root = getRoot(player)
+			if root then
+				local screenPos, onScreen = Camera:WorldToViewportPoint(root.Position)
+				local dist
+
+				if onScreen then
+					dist = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
+				else
+					dist = (root.Position - Camera.CFrame.Position).Magnitude + 10000
+				end
+
+				if dist < closestDistance then
+					closestDistance = dist
+					closestPlayer = player
+				end
+			end
+		end
+	end
+
+	return closestPlayer
+end
+
+local function toggleLock()
+	if lockEnabled then
+		unlockTarget()
+		return
+	end
+
+	local target = selectedPlayer
+	if not isValidTarget(target) then
+		target = getNearestPlayerToMouse()
+	end
+
+	if target then
+		lockToTarget(target)
+	end
+end
+
+local function getFlatCameraForward()
+	local look = Camera.CFrame.LookVector
+	local flat = Vector3.new(look.X, 0, look.Z)
+	if flat.Magnitude <= 0.001 then
+		return Vector3.zero
+	end
+	return flat.Unit
+end
+
+local function getMacroDirection()
+	local humanoid = getHumanoid(LocalPlayer)
+	if humanoid and humanoid.MoveDirection.Magnitude > 0.05 then
+		return humanoid.MoveDirection.Unit
+	end
+	return getFlatCameraForward()
+end
+
+local function applyMacroVelocity()
+	local root = getRoot(LocalPlayer)
+	local humanoid = getHumanoid(LocalPlayer)
+
+	if not root or not humanoid or humanoid.Health <= 0 then
+		return
+	end
+
+	local direction = getMacroDirection()
+	if direction.Magnitude <= 0.001 then
+		return
+	end
+
+	local currentVelocity = root.AssemblyLinearVelocity
+	local horizontalVelocity = direction * MACRO_SPEED
+	root.AssemblyLinearVelocity = Vector3.new(horizontalVelocity.X, currentVelocity.Y, horizontalVelocity.Z)
+end
+
+local function styleInteractive(button, baseColor, hoverColor)
+	hoverColor = hoverColor or colors.CardHover
+	button.BackgroundColor3 = baseColor
+	button.BorderSizePixel = 0
+	button.AutoButtonColor = false
+	createRound(button, 10)
+
+	button.MouseEnter:Connect(function()
+		button.BackgroundColor3 = hoverColor
+	end)
+
+	button.MouseLeave:Connect(function()
+		button.BackgroundColor3 = baseColor
+	end)
+
+	button.MouseButton1Click:Connect(function()
+		tweenButtonFlash(button, baseColor)
+	end)
+end
+
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = GUI_NAME
+screenGui.ResetOnSpawn = false
+screenGui.IgnoreGuiInset = true
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.Parent = PlayerGui
+screenGui:SetAttribute("LockKey", LOCK_KEY.Name)
+screenGui:SetAttribute("MacroKey", MACRO_KEY.Name)
+screenGui:SetAttribute("MacroSpeed", MACRO_SPEED)
+screenGui:SetAttribute("InventoryAutoEnabled", inventoryAutoEnabled)
+screenGui:SetAttribute("CurrentPage", currentPage)
+updateSelectedWeaponsAttribute(screenGui)
+setGuiStoredSpawn(screenGui, selectedSpawnPosition)
+
+local mainFrame = Instance.new("Frame")
+mainFrame.Name = "MainFrame"
+mainFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+mainFrame.Position = savedSettings.Position
+mainFrame.Size = UDim2.new(0, 840, 0, 500)
+mainFrame.BackgroundColor3 = colors.Background
+mainFrame.BorderSizePixel = 0
+mainFrame.Active = true
+mainFrame.Parent = screenGui
+createRound(mainFrame, 16)
+createStroke(mainFrame, colors.Stroke, 1)
+
+local mainScale = Instance.new("UIScale")
+mainScale.Scale = savedSettings.Scale
+mainScale.Parent = mainFrame
+
+local function updateGuiScale()
+	local viewport = Camera.ViewportSize
+	local relative = math.min(viewport.X / 1920, viewport.Y / 1080)
+	mainScale.Scale = math.clamp(relative, 0.72, 1)
+end
+
+local glow = Instance.new("Frame")
+glow.BackgroundTransparency = 1
+glow.Size = UDim2.new(1, 0, 0, 110)
+glow.Parent = mainFrame
+
+local gradient = Instance.new("UIGradient")
+gradient.Color = ColorSequence.new({
+	ColorSequenceKeypoint.new(0, Color3.fromRGB(34, 51, 96)),
+	ColorSequenceKeypoint.new(0.6, Color3.fromRGB(13, 16, 24)),
+	ColorSequenceKeypoint.new(1, Color3.fromRGB(8, 10, 16))
+})
+gradient.Rotation = 90
+gradient.Parent = glow
+
+local topBar = Instance.new("Frame")
+topBar.BackgroundTransparency = 1
+topBar.Size = UDim2.new(1, 0, 0, 56)
+topBar.Parent = mainFrame
+
+local title = Instance.new("TextLabel")
+title.Name = "Title"
+title.BackgroundTransparency = 1
+title.Position = UDim2.new(0, 18, 0, 0)
+title.Size = UDim2.new(1, -36, 1, 0)
+title.Text = "HOOD HUB - " .. LocalPlayer.Name
+title.TextColor3 = colors.Text
+title.TextSize = 22
+title.Font = Enum.Font.GothamBold
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = topBar
+
+local subTitle = Instance.new("TextLabel")
+subTitle.BackgroundTransparency = 1
+subTitle.Position = UDim2.new(0, 18, 0, 36)
+subTitle.Size = UDim2.new(1, -36, 0, 18)
+subTitle.Text = "Panel"
+subTitle.TextColor3 = colors.Muted
+subTitle.TextSize = 11
+subTitle.Font = Enum.Font.GothamMedium
+subTitle.TextXAlignment = Enum.TextXAlignment.Left
+subTitle.Parent = topBar
+
+local body = Instance.new("Frame")
+body.BackgroundTransparency = 1
+body.Position = UDim2.new(0, 12, 0, 64)
+body.Size = UDim2.new(1, -24, 1, -76)
+body.Parent = mainFrame
+
+local sidebar = Instance.new("Frame")
+sidebar.Name = "Sidebar"
+sidebar.BackgroundColor3 = colors.Panel
+sidebar.BorderSizePixel = 0
+sidebar.Size = UDim2.new(0, 210, 1, 0)
+sidebar.Parent = body
+createRound(sidebar, 14)
+createStroke(sidebar, colors.Stroke, 1)
+
+local contentPanel = Instance.new("Frame")
+contentPanel.Name = "ContentPanel"
+contentPanel.BackgroundColor3 = colors.Panel
+contentPanel.BorderSizePixel = 0
+contentPanel.Position = UDim2.new(0, 222, 0, 0)
+contentPanel.Size = UDim2.new(1, -222, 1, 0)
+contentPanel.Parent = body
+createRound(contentPanel, 14)
+createStroke(contentPanel, colors.Stroke, 1)
+
+local profileCard = Instance.new("Frame")
+profileCard.BackgroundColor3 = colors.Panel2
+profileCard.BorderSizePixel = 0
+profileCard.Position = UDim2.new(0, 12, 0, 12)
+profileCard.Size = UDim2.new(1, -24, 0, 86)
+profileCard.Parent = sidebar
+createRound(profileCard, 12)
+createStroke(profileCard, colors.Stroke, 1)
+
+local thumb = Instance.new("ImageLabel")
+thumb.BackgroundTransparency = 1
+thumb.Position = UDim2.new(0, 10, 0.5, -28)
+thumb.Size = UDim2.new(0, 56, 0, 56)
+thumb.Parent = profileCard
+createRound(thumb, 999)
+
+task.spawn(function()
+	local ok, content = pcall(function()
+		return Players:GetUserThumbnailAsync(LocalPlayer.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size100x100)
+	end)
+	if ok then
+		thumb.Image = content
+	end
+end)
+
+local profileName = Instance.new("TextLabel")
+profileName.BackgroundTransparency = 1
+profileName.Position = UDim2.new(0, 76, 0, 16)
+profileName.Size = UDim2.new(1, -86, 0, 24)
+profileName.Text = LocalPlayer.Name
+profileName.TextColor3 = colors.Text
+profileName.TextSize = 20
+profileName.Font = Enum.Font.GothamBold
+profileName.TextXAlignment = Enum.TextXAlignment.Left
+profileName.Parent = profileCard
+
+local profileHandle = Instance.new("TextLabel")
+profileHandle.BackgroundTransparency = 1
+profileHandle.Position = UDim2.new(0, 76, 0, 41)
+profileHandle.Size = UDim2.new(1, -86, 0, 18)
+profileHandle.Text = "@" .. string.lower(LocalPlayer.Name)
+profileHandle.TextColor3 = colors.Muted
+profileHandle.TextSize = 12
+profileHandle.Font = Enum.Font.Gotham
+profileHandle.TextXAlignment = Enum.TextXAlignment.Left
+profileHandle.Parent = profileCard
+
+local profileId = Instance.new("TextLabel")
+profileId.BackgroundTransparency = 1
+profileId.Position = UDim2.new(0, 76, 0, 57)
+profileId.Size = UDim2.new(1, -86, 0, 16)
+profileId.Text = tostring(LocalPlayer.UserId)
+profileId.TextColor3 = colors.Muted
+profileId.TextSize = 11
+profileId.Font = Enum.Font.Gotham
+profileId.TextXAlignment = Enum.TextXAlignment.Left
+profileId.Parent = profileCard
+
+local navHolder = Instance.new("Frame")
+navHolder.BackgroundTransparency = 1
+navHolder.Position = UDim2.new(0, 12, 0, 112)
+navHolder.Size = UDim2.new(1, -24, 1, -124)
+navHolder.Parent = sidebar
+
+local navLayout = Instance.new("UIListLayout")
+navLayout.Padding = UDim.new(0, 8)
+navLayout.Parent = navHolder
+
+local contentHeader = Instance.new("Frame")
+contentHeader.BackgroundTransparency = 1
+contentHeader.Size = UDim2.new(1, -24, 0, 48)
+contentHeader.Position = UDim2.new(0, 12, 0, 10)
+contentHeader.Parent = contentPanel
+
+local contentTitle = Instance.new("TextLabel")
+contentTitle.BackgroundTransparency = 1
+contentTitle.Size = UDim2.new(1, 0, 0, 26)
+contentTitle.Position = UDim2.new(0, 0, 0, 0)
+contentTitle.Text = "Quick Lock"
+contentTitle.TextColor3 = colors.Text
+contentTitle.TextSize = 20
+contentTitle.Font = Enum.Font.GothamBold
+contentTitle.TextXAlignment = Enum.TextXAlignment.Left
+contentTitle.Parent = contentHeader
+
+local contentDesc = Instance.new("TextLabel")
+contentDesc.BackgroundTransparency = 1
+contentDesc.Size = UDim2.new(1, 0, 0, 18)
+contentDesc.Position = UDim2.new(0, 0, 0, 26)
+contentDesc.Text = "Target selection and lock key"
+contentDesc.TextColor3 = colors.Muted
+contentDesc.TextSize = 11
+contentDesc.Font = Enum.Font.Gotham
+contentDesc.TextXAlignment = Enum.TextXAlignment.Left
+contentDesc.Parent = contentHeader
+
+local pagesContainer = Instance.new("Frame")
+pagesContainer.BackgroundTransparency = 1
+pagesContainer.Position = UDim2.new(0, 12, 0, 58)
+pagesContainer.Size = UDim2.new(1, -24, 1, -70)
+pagesContainer.Parent = contentPanel
+
+local function makePage(name)
+	local frame = Instance.new("Frame")
+	frame.Name = name
+	frame.BackgroundTransparency = 1
+	frame.Size = UDim2.fromScale(1, 1)
+	frame.Visible = false
+	frame.Parent = pagesContainer
+	return frame
+end
+
+local quickPage = makePage("Quick Lock")
+local macroPage = makePage("Auto Macro")
+local inventoryPage = makePage("Inventory")
+local spawnPage = makePage("Spawn")
+
+local pageButtons = {}
+
+local function createNavButton(text)
+	local button = Instance.new("TextButton")
+	button.Size = UDim2.new(1, 0, 0, 42)
+	button.Text = text
+	button.TextColor3 = colors.Text
+	button.TextSize = 14
+	button.Font = Enum.Font.GothamMedium
+	button.TextXAlignment = Enum.TextXAlignment.Left
+	button.Parent = navHolder
+	styleInteractive(button, colors.Card, colors.CardHover)
+
+	local pad = Instance.new("UIPadding")
+	pad.PaddingLeft = UDim.new(0, 14)
+	pad.Parent = button
+
+	pageButtons[text] = button
+	return button
+end
+
+createNavButton("Quick Lock")
+createNavButton("Auto Macro")
+createNavButton("Inventory")
+createNavButton("Spawn")
+
+local function setActiveNav(name)
+	for buttonName, button in pairs(pageButtons) do
+		local active = buttonName == name
+		button.BackgroundColor3 = active and colors.Accent or colors.Card
+	end
+end
+
+local function showPage(name)
+	currentPage = name
+	screenGui:SetAttribute("CurrentPage", name)
+
+	quickPage.Visible = name == "Quick Lock"
+	macroPage.Visible = name == "Auto Macro"
+	inventoryPage.Visible = name == "Inventory"
+	spawnPage.Visible = name == "Spawn"
+
+	if name == "Quick Lock" then
+		contentTitle.Text = "Quick Lock"
+		contentDesc.Text = "Target selection and lock key"
+	elseif name == "Auto Macro" then
+		contentTitle.Text = "Auto Macro"
+		contentDesc.Text = "Hold a key to push movement forward"
+	elseif name == "Inventory" then
+		contentTitle.Text = "Automatic Inventory Organiser"
+		contentDesc.Text = "Choose what stays in the hotbar"
+	elseif name == "Spawn" then
+		contentTitle.Text = "Custom Spawn Location"
+		contentDesc.Text = "Pick where you want to respawn"
+	end
+
+	setActiveNav(name)
+end
+
+for name, button in pairs(pageButtons) do
+	button.MouseButton1Click:Connect(function()
+		showPage(name)
+	end)
+end
+
+local function makeCard(parent, posY, height)
+	local frame = Instance.new("Frame")
+	frame.BackgroundColor3 = colors.Panel2
+	frame.BorderSizePixel = 0
+	frame.Position = UDim2.new(0, 0, 0, posY)
+	frame.Size = UDim2.new(1, 0, 0, height)
+	frame.Parent = parent
+	createRound(frame, 12)
+	createStroke(frame, colors.Stroke, 1)
+	return frame
+end
+
+local quickTopCard = makeCard(quickPage, 0, 78)
+local quickBottomCard = makeCard(quickPage, 92, 262)
+
+local quickLockButton = Instance.new("TextButton")
+quickLockButton.Size = UDim2.new(0, 190, 0, 34)
+quickLockButton.Position = UDim2.new(0, 14, 0, 14)
+quickLockButton.Text = "Select Target ▼"
+quickLockButton.TextColor3 = colors.Text
+quickLockButton.TextSize = 14
+quickLockButton.Font = Enum.Font.GothamBold
+quickLockButton.Parent = quickTopCard
+styleInteractive(quickLockButton, colors.Card, colors.CardHover)
+
+local selectedLabel = Instance.new("TextLabel")
+selectedLabel.Size = UDim2.new(1, -240, 0, 18)
+selectedLabel.Position = UDim2.new(0, 14, 0, 50)
+selectedLabel.BackgroundTransparency = 1
+selectedLabel.Text = "Selected: Auto nearest"
+selectedLabel.TextColor3 = colors.Muted
+selectedLabel.TextSize = 12
+selectedLabel.Font = Enum.Font.Gotham
+selectedLabel.TextXAlignment = Enum.TextXAlignment.Left
+selectedLabel.Parent = quickTopCard
+
+local keyButton = Instance.new("TextButton")
+keyButton.Size = UDim2.new(0, 96, 0, 34)
+keyButton.Position = UDim2.new(1, -110, 0, 14)
+keyButton.Text = LOCK_KEY.Name
+keyButton.TextColor3 = colors.Text
+keyButton.TextSize = 13
+keyButton.Font = Enum.Font.GothamBold
+keyButton.Parent = quickTopCard
+styleInteractive(keyButton, colors.Accent, colors.Accent)
+
+local keyLabel = Instance.new("TextLabel")
+keyLabel.Size = UDim2.new(0, 96, 0, 14)
+keyLabel.Position = UDim2.new(1, -110, 0, 50)
+keyLabel.BackgroundTransparency = 1
+keyLabel.Text = "Lock key"
+keyLabel.TextColor3 = colors.Muted
+keyLabel.TextSize = 11
+keyLabel.Font = Enum.Font.Gotham
+keyLabel.Parent = quickTopCard
+
+local dropdownHolder = Instance.new("Frame")
+dropdownHolder.Size = UDim2.new(1, -28, 0, 0)
+dropdownHolder.Position = UDim2.new(0, 14, 0, 14)
+dropdownHolder.BackgroundColor3 = colors.Card
+dropdownHolder.BorderSizePixel = 0
+dropdownHolder.ClipsDescendants = true
+dropdownHolder.Visible = false
+dropdownHolder.Parent = quickBottomCard
+createRound(dropdownHolder, 10)
+createStroke(dropdownHolder, colors.Stroke, 1)
+
+local dropdownScroll = Instance.new("ScrollingFrame")
+dropdownScroll.Size = UDim2.new(1, -8, 1, -8)
+dropdownScroll.Position = UDim2.new(0, 4, 0, 4)
+dropdownScroll.BackgroundTransparency = 1
+dropdownScroll.BorderSizePixel = 0
+dropdownScroll.ScrollBarThickness = 4
+dropdownScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+dropdownScroll.Parent = dropdownHolder
+
+local dropdownLayout = Instance.new("UIListLayout")
+dropdownLayout.Padding = UDim.new(0, 6)
+dropdownLayout.Parent = dropdownScroll
+
+local dropdownHint = Instance.new("TextLabel")
+dropdownHint.BackgroundTransparency = 1
+dropdownHint.Position = UDim2.new(0, 14, 0, 14)
+dropdownHint.Size = UDim2.new(1, -28, 0, 20)
+dropdownHint.Text = "Player list"
+dropdownHint.TextColor3 = colors.Muted
+dropdownHint.TextSize = 12
+dropdownHint.Font = Enum.Font.GothamMedium
+dropdownHint.TextXAlignment = Enum.TextXAlignment.Left
+dropdownHint.Parent = quickBottomCard
+
+local dropdownOpen = false
+
+local macroCard = makeCard(macroPage, 0, 110)
+
+local macroKeyButton = Instance.new("TextButton")
+macroKeyButton.Size = UDim2.new(0, 100, 0, 34)
+macroKeyButton.Position = UDim2.new(0, 14, 0, 18)
+macroKeyButton.Text = MACRO_KEY.Name
+macroKeyButton.TextColor3 = colors.Text
+macroKeyButton.TextSize = 13
+macroKeyButton.Font = Enum.Font.GothamBold
+macroKeyButton.Parent = macroCard
+styleInteractive(macroKeyButton, colors.Accent2, colors.Accent2)
+
+local macroSpeedBox = Instance.new("TextBox")
+macroSpeedBox.Size = UDim2.new(0, 110, 0, 34)
+macroSpeedBox.Position = UDim2.new(0, 126, 0, 18)
+macroSpeedBox.BackgroundColor3 = colors.Card
+macroSpeedBox.BorderSizePixel = 0
+macroSpeedBox.Text = tostring(MACRO_SPEED)
+macroSpeedBox.PlaceholderText = "Speed"
+macroSpeedBox.TextColor3 = colors.Text
+macroSpeedBox.TextSize = 13
+macroSpeedBox.Font = Enum.Font.Gotham
+macroSpeedBox.ClearTextOnFocus = false
+macroSpeedBox.Parent = macroCard
+createRound(macroSpeedBox, 10)
+createStroke(macroSpeedBox, colors.Stroke, 1)
+
+local macroInfoLabel = Instance.new("TextLabel")
+macroInfoLabel.Size = UDim2.new(1, -28, 0, 18)
+macroInfoLabel.Position = UDim2.new(0, 14, 0, 64)
+macroInfoLabel.BackgroundTransparency = 1
+macroInfoLabel.Text = "Hold the macro key to push forward. Steering uses movement direction or camera forward."
+macroInfoLabel.TextColor3 = colors.Muted
+macroInfoLabel.TextSize = 12
+macroInfoLabel.Font = Enum.Font.Gotham
+macroInfoLabel.TextWrapped = true
+macroInfoLabel.TextXAlignment = Enum.TextXAlignment.Left
+macroInfoLabel.TextYAlignment = Enum.TextYAlignment.Top
+macroInfoLabel.Parent = macroCard
+
+local inventoryTopCard = makeCard(inventoryPage, 0, 84)
+local inventoryListCard = makeCard(inventoryPage, 98, 256)
+
+local inventoryInfoLabel = Instance.new("TextLabel")
+inventoryInfoLabel.Size = UDim2.new(1, -140, 0, 34)
+inventoryInfoLabel.Position = UDim2.new(0, 14, 0, 12)
+inventoryInfoLabel.BackgroundTransparency = 1
+inventoryInfoLabel.Text = "Choose which weapons stay in the front of the hotbar."
+inventoryInfoLabel.TextColor3 = colors.Muted
+inventoryInfoLabel.TextSize = 12
+inventoryInfoLabel.Font = Enum.Font.Gotham
+inventoryInfoLabel.TextWrapped = true
+inventoryInfoLabel.TextXAlignment = Enum.TextXAlignment.Left
+inventoryInfoLabel.TextYAlignment = Enum.TextYAlignment.Top
+inventoryInfoLabel.Parent = inventoryTopCard
+
+local inventoryToggleButton = Instance.new("TextButton")
+inventoryToggleButton.Size = UDim2.new(0, 100, 0, 32)
+inventoryToggleButton.Position = UDim2.new(1, -114, 0, 14)
+inventoryToggleButton.TextColor3 = colors.Text
+inventoryToggleButton.TextSize = 13
+inventoryToggleButton.Font = Enum.Font.GothamBold
+inventoryToggleButton.Parent = inventoryTopCard
+styleInteractive(inventoryToggleButton, colors.Card, colors.CardHover)
+
+local refreshWeaponsButton = Instance.new("TextButton")
+refreshWeaponsButton.Size = UDim2.new(0, 100, 0, 28)
+refreshWeaponsButton.Position = UDim2.new(1, -114, 1, -40)
+refreshWeaponsButton.Text = "Refresh"
+refreshWeaponsButton.TextColor3 = colors.Text
+refreshWeaponsButton.TextSize = 12
+refreshWeaponsButton.Font = Enum.Font.GothamBold
+refreshWeaponsButton.Parent = inventoryTopCard
+styleInteractive(refreshWeaponsButton, colors.Card, colors.CardHover)
+
+local weaponsList = Instance.new("ScrollingFrame")
+weaponsList.Size = UDim2.new(1, -28, 1, -28)
+weaponsList.Position = UDim2.new(0, 14, 0, 14)
+weaponsList.BackgroundColor3 = colors.Card
+weaponsList.BorderSizePixel = 0
+weaponsList.ScrollBarThickness = 4
+weaponsList.CanvasSize = UDim2.new(0, 0, 0, 0)
+weaponsList.Parent = inventoryListCard
+createRound(weaponsList, 10)
+createStroke(weaponsList, colors.Stroke, 1)
+
+local weaponsLayout = Instance.new("UIListLayout")
+weaponsLayout.Padding = UDim.new(0, 6)
+weaponsLayout.Parent = weaponsList
+
+local spawnTopCard = makeCard(spawnPage, 0, 120)
+local spawnBottomCard = makeCard(spawnPage, 134, 120)
+
+local spawnInfoLabel = Instance.new("TextLabel")
+spawnInfoLabel.Size = UDim2.new(1, -28, 0, 38)
+spawnInfoLabel.Position = UDim2.new(0, 14, 0, 14)
+spawnInfoLabel.BackgroundTransparency = 1
+spawnInfoLabel.Text = "Click the button below, hide the UI, place the red ground marker, then left click to confirm."
+spawnInfoLabel.TextColor3 = colors.Muted
+spawnInfoLabel.TextSize = 12
+spawnInfoLabel.Font = Enum.Font.Gotham
+spawnInfoLabel.TextWrapped = true
+spawnInfoLabel.TextXAlignment = Enum.TextXAlignment.Left
+spawnInfoLabel.TextYAlignment = Enum.TextYAlignment.Top
+spawnInfoLabel.Parent = spawnTopCard
+
+local spawnStatusLabel = Instance.new("TextLabel")
+spawnStatusLabel.Size = UDim2.new(1, -28, 0, 18)
+spawnStatusLabel.Position = UDim2.new(0, 14, 0, 58)
+spawnStatusLabel.BackgroundTransparency = 1
+spawnStatusLabel.Text = "Spawn: Default"
+spawnStatusLabel.TextColor3 = colors.Muted
+spawnStatusLabel.TextSize = 12
+spawnStatusLabel.Font = Enum.Font.Gotham
+spawnStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+spawnStatusLabel.Parent = spawnTopCard
+
+local setSpawnButton = Instance.new("TextButton")
+setSpawnButton.Size = UDim2.new(1, -28, 0, 34)
+setSpawnButton.Position = UDim2.new(0, 14, 1, -48)
+setSpawnButton.Text = "Select Spawn Location"
+setSpawnButton.TextColor3 = colors.Text
+setSpawnButton.TextSize = 13
+setSpawnButton.Font = Enum.Font.GothamBold
+setSpawnButton.Parent = spawnTopCard
+styleInteractive(setSpawnButton, colors.Red, colors.Red)
+
+local clearSpawnButton = Instance.new("TextButton")
+clearSpawnButton.Size = UDim2.new(1, -28, 0, 34)
+clearSpawnButton.Position = UDim2.new(0, 14, 0, 14)
+clearSpawnButton.Text = "Clear Saved Spawn"
+clearSpawnButton.TextColor3 = colors.Text
+clearSpawnButton.TextSize = 13
+clearSpawnButton.Font = Enum.Font.GothamBold
+clearSpawnButton.Parent = spawnBottomCard
+styleInteractive(clearSpawnButton, colors.Card, colors.CardHover)
+
+local spawnBottomInfo = Instance.new("TextLabel")
+spawnBottomInfo.Size = UDim2.new(1, -28, 0, 42)
+spawnBottomInfo.Position = UDim2.new(0, 14, 0, 58)
+spawnBottomInfo.BackgroundTransparency = 1
+spawnBottomInfo.Text = "Right click or press Escape while selecting to cancel."
+spawnBottomInfo.TextColor3 = colors.Muted
+spawnBottomInfo.TextSize = 12
+spawnBottomInfo.Font = Enum.Font.Gotham
+spawnBottomInfo.TextWrapped = true
+spawnBottomInfo.TextXAlignment = Enum.TextXAlignment.Left
+spawnBottomInfo.TextYAlignment = Enum.TextYAlignment.Top
+spawnBottomInfo.Parent = spawnBottomCard
+
+local function refreshDropdownCanvas()
+	dropdownScroll.CanvasSize = UDim2.new(0, 0, 0, dropdownLayout.AbsoluteContentSize.Y + 10)
+end
+
+local function refreshWeaponsCanvas()
+	weaponsList.CanvasSize = UDim2.new(0, 0, 0, weaponsLayout.AbsoluteContentSize.Y + 8)
+end
+
+dropdownLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(refreshDropdownCanvas)
+weaponsLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(refreshWeaponsCanvas)
+
+local function updateSelectedLabel()
+	if selectedPlayer and selectedPlayer.Parent == Players then
+		selectedLabel.Text = "Selected: " .. selectedPlayer.Name
+	else
+		selectedLabel.Text = "Selected: Auto nearest"
+	end
+end
+
+local function updateInventoryToggleButton()
+	local enabled = inventoryAutoEnabled
+	inventoryToggleButton.Text = enabled and "Enabled" or "Disabled"
+	inventoryToggleButton.BackgroundColor3 = enabled and colors.Green or colors.Card
+	screenGui:SetAttribute("InventoryAutoEnabled", enabled)
+end
+
+local function updateSpawnStatus()
+	if selectedSpawnPosition then
+		spawnStatusLabel.Text = string.format(
+			"Spawn: %.1f, %.1f, %.1f",
+			selectedSpawnPosition.X,
+			selectedSpawnPosition.Y,
+			selectedSpawnPosition.Z
+		)
+	else
+		spawnStatusLabel.Text = "Spawn: Default"
+	end
+end
+
+local function clearDropdownButtons()
+	for _, child in ipairs(dropdownScroll:GetChildren()) do
+		if child:IsA("TextButton") then
+			child:Destroy()
+		end
+	end
+end
+
+local function rebuildDropdown()
+	clearDropdownButtons()
+
+	local autoButton = Instance.new("TextButton")
+	autoButton.Size = UDim2.new(1, -2, 0, 30)
+	autoButton.Text = "Auto nearest to mouse"
+	autoButton.TextColor3 = colors.Text
+	autoButton.TextSize = 13
+	autoButton.Font = Enum.Font.Gotham
+	autoButton.Parent = dropdownScroll
+	styleInteractive(autoButton, colors.Panel2, colors.CardHover)
+
+	autoButton.MouseButton1Click:Connect(function()
+		selectedPlayer = nil
+		updateSelectedLabel()
+	end)
+
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player ~= LocalPlayer then
+			local button = Instance.new("TextButton")
+			button.Size = UDim2.new(1, -2, 0, 30)
+			button.Text = player.Name
+			button.TextColor3 = colors.Text
+			button.TextSize = 13
+			button.Font = Enum.Font.Gotham
+			button.Parent = dropdownScroll
+			styleInteractive(button, colors.Panel2, colors.CardHover)
+
+			button.MouseButton1Click:Connect(function()
+				selectedPlayer = player
+				updateSelectedLabel()
+			end)
+		end
+	end
+
+	refreshDropdownCanvas()
+end
+
+local function setDropdownVisible(state)
+	dropdownOpen = state
+	dropdownHolder.Visible = state
+	quickLockButton.Text = state and "Select Target ▲" or "Select Target ▼"
+
+	if state then
+		rebuildDropdown()
+		dropdownHolder:TweenSize(UDim2.new(1, -28, 0, 214), Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.15, true)
+	else
+		dropdownHolder:TweenSize(UDim2.new(1, -28, 0, 0), Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.15, true)
+	end
+end
+
+local function getUniqueToolNames()
+	local names = {}
+	local found = {}
+
+	local backpack = getBackpack()
+	if backpack then
+		for _, item in ipairs(backpack:GetChildren()) do
+			if item:IsA("Tool") and not found[item.Name] then
+				found[item.Name] = true
+				table.insert(names, item.Name)
+			end
+		end
+	end
+
+	local character = getCharacter(LocalPlayer)
+	if character then
+		for _, item in ipairs(character:GetChildren()) do
+			if item:IsA("Tool") and not found[item.Name] then
+				found[item.Name] = true
+				table.insert(names, item.Name)
+			end
+		end
+	end
+
+	table.sort(names, function(a, b)
+		return string.lower(a) < string.lower(b)
+	end)
+
+	return names
+end
+
+local function queueOrganiseInventory()
+	if organiseQueued then
+		return
+	end
+
+	organiseQueued = true
+	task.delay(0.08, function()
+		organiseQueued = false
+
+		if not inventoryAutoEnabled then
+			return
+		end
+
+		local backpack = getBackpack()
+		if not backpack then
+			return
+		end
+
+		local keepList = {}
+		local restList = {}
+
+		for _, item in ipairs(backpack:GetChildren()) do
+			if item:IsA("Tool") then
+				if inventoryToolStates[item.Name] then
+					table.insert(keepList, item)
+				else
+					table.insert(restList, item)
+				end
+			end
+		end
+
+		table.sort(keepList, function(a, b)
+			return string.lower(a.Name) < string.lower(b.Name)
+		end)
+
+		table.sort(restList, function(a, b)
+			return string.lower(a.Name) < string.lower(b.Name)
+		end)
+
+		local ordered = {}
+		for _, tool in ipairs(keepList) do
+			table.insert(ordered, tool)
+		end
+		for _, tool in ipairs(restList) do
+			table.insert(ordered, tool)
+		end
+
+		for _, tool in ipairs(ordered) do
+			if tool.Parent == backpack then
+				tool.Parent = nil
+				tool.Parent = backpack
+			end
+		end
+	end)
+end
+
+local function disconnectOrganiserConnections()
+	for _, connection in ipairs(organiserConnections) do
+		connection:Disconnect()
+	end
+	table.clear(organiserConnections)
+end
+
+local function hookOrganiser()
+	disconnectOrganiserConnections()
+
+	local backpack = getBackpack()
+	local character = getCharacter(LocalPlayer)
+
+	if backpack then
+		table.insert(organiserConnections, backpack.ChildAdded:Connect(function(child)
+			if child:IsA("Tool") then
+				queueOrganiseInventory()
+			end
+		end))
+
+		table.insert(organiserConnections, backpack.ChildRemoved:Connect(function(child)
+			if child:IsA("Tool") then
+				task.defer(queueOrganiseInventory)
+			end
+		end))
+	end
+
+	if character then
+		table.insert(organiserConnections, character.ChildAdded:Connect(function(child)
+			if child:IsA("Tool") then
+				task.defer(queueOrganiseInventory)
+			end
+		end))
+
+		table.insert(organiserConnections, character.ChildRemoved:Connect(function(child)
+			if child:IsA("Tool") then
+				task.defer(queueOrganiseInventory)
+			end
+		end))
+	end
+end
+
+local function clearWeaponRows()
+	for _, child in ipairs(weaponsList:GetChildren()) do
+		if child:IsA("Frame") then
+			child:Destroy()
+		end
+	end
+end
+
+local function rebuildWeaponsList()
+	clearWeaponRows()
+
+	local names = getUniqueToolNames()
+	if #names == 0 then
+		local empty = Instance.new("Frame")
+		empty.Size = UDim2.new(1, -8, 0, 36)
+		empty.BackgroundTransparency = 1
+		empty.Parent = weaponsList
+
+		local label = Instance.new("TextLabel")
+		label.Size = UDim2.new(1, 0, 1, 0)
+		label.BackgroundTransparency = 1
+		label.Text = "No weapons/tools found yet."
+		label.TextColor3 = colors.Muted
+		label.TextSize = 12
+		label.Font = Enum.Font.Gotham
+		label.Parent = empty
+		refreshWeaponsCanvas()
+		return
+	end
+
+	for _, toolName in ipairs(names) do
+		local row = Instance.new("Frame")
+		row.Size = UDim2.new(1, -8, 0, 38)
+		row.BackgroundColor3 = colors.Panel2
+		row.BorderSizePixel = 0
+		row.Parent = weaponsList
+		createRound(row, 9)
+		createStroke(row, colors.Stroke, 1)
+
+		local check = Instance.new("TextButton")
+		check.Size = UDim2.new(0, 78, 0, 26)
+		check.Position = UDim2.new(0, 8, 0.5, -13)
+		check.Text = inventoryToolStates[toolName] and "Keep" or "Move"
+		check.TextColor3 = colors.Text
+		check.TextSize = 12
+		check.Font = Enum.Font.GothamBold
+		check.Parent = row
+		styleInteractive(check, inventoryToolStates[toolName] and colors.Green or colors.Red, inventoryToolStates[toolName] and colors.Green or colors.Red)
+
+		local nameLabel = Instance.new("TextLabel")
+		nameLabel.Size = UDim2.new(1, -100, 1, 0)
+		nameLabel.Position = UDim2.new(0, 94, 0, 0)
+		nameLabel.BackgroundTransparency = 1
+		nameLabel.Text = toolName
+		nameLabel.TextColor3 = colors.Text
+		nameLabel.TextSize = 12
+		nameLabel.Font = Enum.Font.Gotham
+		nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+		nameLabel.Parent = row
+
+		check.MouseButton1Click:Connect(function()
+			inventoryToolStates[toolName] = not inventoryToolStates[toolName]
+			updateSelectedWeaponsAttribute(screenGui)
+			rebuildWeaponsList()
+			queueOrganiseInventory()
+		end)
+	end
+
+	refreshWeaponsCanvas()
+end
+
+local function createOrUpdateSpawnMarker(position)
+	if not spawnMarker then
+		spawnMarker = Instance.new("Part")
+		spawnMarker.Name = "LocalCustomSpawnMarker"
+		spawnMarker.Shape = Enum.PartType.Ball
+		spawnMarker.Material = Enum.Material.Neon
+		spawnMarker.Color = Color3.fromRGB(255, 50, 50)
+		spawnMarker.Transparency = 0.35
+		spawnMarker.CanCollide = false
+		spawnMarker.CanQuery = false
+		spawnMarker.CanTouch = false
+		spawnMarker.Anchored = true
+		spawnMarker.Size = Vector3.new(3, 3, 3)
+		spawnMarker.Parent = Workspace
+	end
+
+	spawnMarker.Position = position
+end
+
+local function removeSpawnMarker()
+	if spawnMarker then
+		spawnMarker:Destroy()
+		spawnMarker = nil
+	end
+end
+
+local function getMouseGroundPosition()
+	local mousePos = UserInputService:GetMouseLocation()
+	local ray = Camera:ViewportPointToRay(mousePos.X, mousePos.Y)
+
+	local rayParams = RaycastParams.new()
+	rayParams.FilterType = Enum.RaycastFilterType.Exclude
+
+	local exclude = {spawnMarker}
+	local character = getCharacter(LocalPlayer)
+	if character then
+		table.insert(exclude, character)
+	end
+
+	rayParams.FilterDescendantsInstances = exclude
+
+	local result = Workspace:Raycast(ray.Origin, ray.Direction * 2000, rayParams)
+	if result then
+		local sizeY = spawnMarker and spawnMarker.Size.Y or 3
+		return result.Position + Vector3.new(0, sizeY * 0.5, 0)
+	end
+
+	return nil
+end
+
+local function finishSpawnSelection(confirm)
+	spawnSelecting = false
+
+	if spawnSelectionConnection then
+		spawnSelectionConnection:Disconnect()
+		spawnSelectionConnection = nil
+	end
+
+	if spawnCancelConnection then
+		spawnCancelConnection:Disconnect()
+		spawnCancelConnection = nil
+	end
+
+	if spawnConfirmConnection then
+		spawnConfirmConnection:Disconnect()
+		spawnConfirmConnection = nil
+	end
+
+	mainFrame.Visible = true
+
+	if not confirm and selectedSpawnPosition then
+		createOrUpdateSpawnMarker(selectedSpawnPosition)
+	elseif not confirm then
+		removeSpawnMarker()
+	end
+end
+
+local function beginSpawnSelection()
+	if spawnSelecting then
+		return
+	end
+
+	spawnSelecting = true
+	mainFrame.Visible = false
+	createOrUpdateSpawnMarker(selectedSpawnPosition or Vector3.new(0, 3, 0))
+
+	spawnSelectionConnection = RunService.RenderStepped:Connect(function()
+		local groundPosition = getMouseGroundPosition()
+		if groundPosition then
+			createOrUpdateSpawnMarker(groundPosition)
+		end
+	end)
+
+	spawnConfirmConnection = UserInputService.InputBegan:Connect(function(input, gameProcessed)
+		if gameProcessed then
+			return
+		end
+
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			local groundPosition = getMouseGroundPosition()
+			if groundPosition then
+				selectedSpawnPosition = groundPosition
+				createOrUpdateSpawnMarker(selectedSpawnPosition)
+				setGuiStoredSpawn(screenGui, selectedSpawnPosition)
+				updateSpawnStatus()
+				finishSpawnSelection(true)
+			end
+		end
+	end)
+
+	spawnCancelConnection = UserInputService.InputBegan:Connect(function(input, gameProcessed)
+		if gameProcessed then
+			return
+		end
+
+		if input.KeyCode == Enum.KeyCode.Escape or input.UserInputType == Enum.UserInputType.MouseButton2 then
+			finishSpawnSelection(false)
+		end
+	end)
+end
+
+local function applyCustomSpawn(character)
+	if not selectedSpawnPosition then
+		return
+	end
+
+	task.defer(function()
+		local root = character:WaitForChild("HumanoidRootPart", 5)
+		local humanoid = character:FindFirstChildOfClass("Humanoid")
+		if not root or not humanoid or humanoid.Health <= 0 then
+			return
+		end
+
+		task.wait(0.1)
+		character:PivotTo(CFrame.new(selectedSpawnPosition + Vector3.new(0, 2.5, 0)))
+	end)
+end
+
+quickLockButton.MouseButton1Click:Connect(function()
+	setDropdownVisible(not dropdownOpen)
+end)
+
+keyButton.MouseButton1Click:Connect(function()
+	listeningForKey = true
+	listeningForMacroKey = false
+	keyButton.Text = "Press..."
+end)
+
+macroKeyButton.MouseButton1Click:Connect(function()
+	listeningForMacroKey = true
+	listeningForKey = false
+	macroKeyButton.Text = "Press..."
+end)
+
+macroSpeedBox.FocusLost:Connect(function()
+	local number = tonumber(macroSpeedBox.Text)
+	if number then
+		MACRO_SPEED = math.clamp(number, 1, 300)
+		screenGui:SetAttribute("MacroSpeed", MACRO_SPEED)
+	end
+	macroSpeedBox.Text = tostring(MACRO_SPEED)
+end)
+
+inventoryToggleButton.MouseButton1Click:Connect(function()
+	inventoryAutoEnabled = not inventoryAutoEnabled
+	updateInventoryToggleButton()
+	queueOrganiseInventory()
+end)
+
+refreshWeaponsButton.MouseButton1Click:Connect(function()
+	rebuildWeaponsList()
+	queueOrganiseInventory()
+end)
+
+setSpawnButton.MouseButton1Click:Connect(function()
+	showPage("Spawn")
+	beginSpawnSelection()
+end)
+
+clearSpawnButton.MouseButton1Click:Connect(function()
+	selectedSpawnPosition = nil
+	setGuiStoredSpawn(screenGui, nil)
+	removeSpawnMarker()
+	updateSpawnStatus()
+end)
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed then
+		return
+	end
+
+	if listeningForKey and input.UserInputType == Enum.UserInputType.Keyboard then
+		if input.KeyCode ~= Enum.KeyCode.Unknown then
+			LOCK_KEY = input.KeyCode
+			keyButton.Text = LOCK_KEY.Name
+			screenGui:SetAttribute("LockKey", LOCK_KEY.Name)
+		end
+		listeningForKey = false
+		return
+	end
+
+	if listeningForMacroKey and input.UserInputType == Enum.UserInputType.Keyboard then
+		if input.KeyCode ~= Enum.KeyCode.Unknown then
+			MACRO_KEY = input.KeyCode
+			macroKeyButton.Text = MACRO_KEY.Name
+			screenGui:SetAttribute("MacroKey", MACRO_KEY.Name)
+		end
+		listeningForMacroKey = false
+		return
+	end
+
+	if spawnSelecting then
+		return
+	end
+
+	if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == LOCK_KEY then
+		toggleLock()
+	end
+
+	if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == MACRO_KEY then
+		macroHeld = true
+	end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == MACRO_KEY then
+		macroHeld = false
+	end
+end)
+
+macroConnection = RunService.RenderStepped:Connect(function()
+	if macroHeld then
+		applyMacroVelocity()
+	end
+end)
+
+RunService:BindToRenderStep("QuickLockOnCamera", Enum.RenderPriority.Camera.Value + 1, function()
+	if not lockEnabled then
+		return
+	end
+
+	if not isValidTarget(currentTarget) then
+		unlockTarget()
+		return
+	end
+
+	local targetRoot = getRoot(currentTarget)
+	if not targetRoot then
+		unlockTarget()
+		return
+	end
+
+	local currentPos = Camera.CFrame.Position
+	local lookTarget = targetRoot.Position + Vector3.new(0, 2, 0)
+	Camera.CFrame = CFrame.lookAt(currentPos, lookTarget)
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	if player == selectedPlayer then
+		selectedPlayer = nil
+		updateSelectedLabel()
+	end
+
+	if player == currentTarget then
+		unlockTarget()
+	end
+end)
+
+Players.PlayerAdded:Connect(function()
+	if dropdownOpen then
+		rebuildDropdown()
+	end
+end)
+
+LocalPlayer.CharacterAdded:Connect(function(character)
+	hookOrganiser()
+	task.defer(rebuildWeaponsList)
+	task.defer(queueOrganiseInventory)
+	applyCustomSpawn(character)
+end)
+
+local backpack = getBackpack()
+if backpack then
+	backpack.ChildAdded:Connect(function(child)
+		if child:IsA("Tool") then
+			task.defer(rebuildWeaponsList)
+		end
+	end)
+
+	backpack.ChildRemoved:Connect(function(child)
+		if child:IsA("Tool") then
+			task.defer(rebuildWeaponsList)
+		end
+	end)
+end
+
+mainFrame:GetPropertyChangedSignal("Position"):Connect(function()
+	screenGui:SetAttribute("SavedPosXScale", mainFrame.Position.X.Scale)
+	screenGui:SetAttribute("SavedPosXOffset", mainFrame.Position.X.Offset)
+	screenGui:SetAttribute("SavedPosYScale", mainFrame.Position.Y.Scale)
+	screenGui:SetAttribute("SavedPosYOffset", mainFrame.Position.Y.Offset)
+end)
+
+Camera:GetPropertyChangedSignal("ViewportSize"):Connect(updateGuiScale)
+
+updateGuiScale()
+updateSelectedLabel()
+updateInventoryToggleButton()
+updateSpawnStatus()
+hookOrganiser()
+rebuildWeaponsList()
+if selectedSpawnPosition then
+	createOrUpdateSpawnMarker(selectedSpawnPosition)
+end
+queueOrganiseInventory()
+showPage(pageButtons[currentPage] and currentPage or "Quick Lock")
+
+local currentCharacter = getCharacter(LocalPlayer)
+if currentCharacter then
+	applyCustomSpawn(currentCharacter)
+end
