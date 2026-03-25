@@ -709,7 +709,7 @@ end
 
 createNavButton("Quick Lock")
 createNavButton("Auto Macro")
-createNavButton("Inventory")
+--createNavButton("Inventory")
 createNavButton("Spawn")
 
 local function setActiveNav(name)
