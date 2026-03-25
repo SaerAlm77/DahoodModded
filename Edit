@@ -158,15 +158,8 @@ local function getBackpack()
 end
 
 local function getToolStorage()
-	local storage = LocalPlayer:FindFirstChild("ToolStorage")
-	if not storage then
-		storage = Instance.new("Folder")
-		storage.Name = "ToolStorage"
-		storage.Parent = LocalPlayer
-	end
-	return storage
+	return nil
 end
-
 local function isValidTarget(player)
 	if not player or player == LocalPlayer then
 		return false
@@ -709,7 +702,7 @@ end
 
 createNavButton("Quick Lock")
 createNavButton("Auto Macro")
---createNavButton("Inventory")
+createNavButton("Inventory")
 createNavButton("Spawn")
 
 local function setActiveNav(name)
@@ -1257,7 +1250,6 @@ local function queueOrganiseInventory()
 		local backpack = getBackpack()
 		local character = getCharacter(LocalPlayer)
 		local humanoid = getHumanoid(LocalPlayer)
-		local storage = getToolStorage()
 
 		if not backpack or not character or not humanoid or humanoid.Health <= 0 then
 			return
@@ -1281,72 +1273,40 @@ local function queueOrganiseInventory()
 
 			task.wait()
 
-			local toolBucket = getToolBucket()
-
+			local allTools = {}
 			for _, item in ipairs(backpack:GetChildren()) do
 				if item:IsA("Tool") then
-					item.Parent = storage
+					registerToolVisual(item)
+					table.insert(allTools, item)
 				end
+			end
+
+			table.sort(allTools, function(a, b)
+				local aKept = inventoryAutoEnabled and inventoryToolStates[a.Name] == true
+				local bKept = inventoryAutoEnabled and inventoryToolStates[b.Name] == true
+
+				if aKept ~= bKept then
+					return aKept
+				end
+
+				local aOrder = inventoryToolOrder[a.Name] or math.huge
+				local bOrder = inventoryToolOrder[b.Name] or math.huge
+
+				if aKept and bKept and aOrder ~= bOrder then
+					return aOrder < bOrder
+				end
+
+				return string.lower(a.Name) < string.lower(b.Name)
+			end)
+
+			for _, tool in ipairs(allTools) do
+				tool.Parent = nil
 			end
 
 			task.wait()
 
-			if not inventoryAutoEnabled then
-				local allNames = {}
-				for toolName in pairs(toolBucket) do
-					table.insert(allNames, toolName)
-				end
-
-				table.sort(allNames, function(a, b)
-					return string.lower(a) < string.lower(b)
-				end)
-
-				for _, toolName in ipairs(allNames) do
-					local toolList = toolBucket[toolName]
-					if toolList then
-						for _, tool in ipairs(toolList) do
-							if tool.Parent ~= backpack then
-								tool.Parent = backpack
-							end
-						end
-					end
-				end
-
-				if equippedName then
-					local toolToEquip = backpack:FindFirstChild(equippedName)
-					if toolToEquip then
-						humanoid:EquipTool(toolToEquip)
-					end
-				end
-
-				return
-			end
-
-			local keptNames = getOrderedKeptToolNames()
-			local keptSet = {}
-			for _, toolName in ipairs(keptNames) do
-				keptSet[toolName] = true
-			end
-
-			for _, toolName in ipairs(keptNames) do
-				local toolList = toolBucket[toolName]
-				if toolList then
-					for _, tool in ipairs(toolList) do
-						if tool.Parent ~= backpack then
-							tool.Parent = backpack
-						end
-					end
-				end
-			end
-
-			for toolName, toolList in pairs(toolBucket) do
-				if not keptSet[toolName] then
-					for _, tool in ipairs(toolList) do
-						if tool.Parent ~= storage then
-							tool.Parent = storage
-						end
-					end
-				end
+			for _, tool in ipairs(allTools) do
+				tool.Parent = backpack
 			end
 
 			task.wait()
@@ -1854,6 +1814,8 @@ end)
 
 Camera:GetPropertyChangedSignal("ViewportSize"):Connect(updateGuiScale)
 
+
+
 if selectedSpawnPosition then
 	createOrUpdateSpawnMarker(selectedSpawnPosition)
 end
@@ -1873,4 +1835,3 @@ hookOrganiser()
 queueOrganiseInventory()
 showPage(currentPage)
 updateGuiScale()
-updateInventoryToggleButton()
