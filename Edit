@@ -36,6 +36,7 @@ local inventoryAutoEnabled = false
 local inventoryToolStates = {}
 local inventoryToolIcons = {}
 local organiseQueued = false
+local organiserBusy = false
 local currentPage = "Quick Lock"
 
 local colors = {
@@ -1228,7 +1229,7 @@ local function getUniqueToolNames()
 end
 
 local function queueOrganiseInventory()
-	if organiseQueued then
+	if organiseQueued or organiserBusy then
 		return
 	end
 
@@ -1236,6 +1237,10 @@ local function queueOrganiseInventory()
 
 	task.delay(0.12, function()
 		organiseQueued = false
+
+		if organiserBusy then
+			return
+		end
 
 		local backpack = getBackpack()
 		local character = getCharacter(LocalPlayer)
@@ -1246,90 +1251,104 @@ local function queueOrganiseInventory()
 			return
 		end
 
-		rebuildKeepOrderFromDefault()
+		organiserBusy = true
 
-		local equippedTool = character:FindFirstChildOfClass("Tool")
-		local equippedName = equippedTool and equippedTool.Name or nil
+		local ok, err = pcall(function()
+			local equippedTool = character:FindFirstChildOfClass("Tool")
+			local equippedName = equippedTool and equippedTool.Name or nil
 
-		humanoid:UnequipTools()
-		task.wait()
+			humanoid:UnequipTools()
+			task.wait()
 
-		for _, item in ipairs(character:GetChildren()) do
-			if item:IsA("Tool") then
-				item.Parent = backpack
-			end
-		end
-
-		task.wait()
-
-		local toolBucket = getToolBucket()
-
-		for _, item in ipairs(backpack:GetChildren()) do
-			if item:IsA("Tool") then
-				item.Parent = storage
-			end
-		end
-
-		task.wait()
-
-		if not inventoryAutoEnabled then
-			for toolName, toolList in pairs(toolBucket) do
-				table.sort(toolList, function(a, b)
-					return string.lower(a.Name) < string.lower(b.Name)
-				end)
-
-				for _, tool in ipairs(toolList) do
-					tool.Parent = backpack
+			for _, item in ipairs(character:GetChildren()) do
+				if item:IsA("Tool") then
+					item.Parent = backpack
 				end
 			end
 
-			if equippedName then
+			task.wait()
+
+			local toolBucket = getToolBucket()
+
+			for _, item in ipairs(backpack:GetChildren()) do
+				if item:IsA("Tool") then
+					item.Parent = storage
+				end
+			end
+
+			task.wait()
+
+			if not inventoryAutoEnabled then
+				local allNames = {}
+				for toolName in pairs(toolBucket) do
+					table.insert(allNames, toolName)
+				end
+
+				table.sort(allNames, function(a, b)
+					return string.lower(a) < string.lower(b)
+				end)
+
+				for _, toolName in ipairs(allNames) do
+					local toolList = toolBucket[toolName]
+					for _, tool in ipairs(toolList) do
+						tool.Parent = backpack
+					end
+				end
+
+				if equippedName then
+					local toolToEquip = backpack:FindFirstChild(equippedName)
+					if toolToEquip then
+						humanoid:EquipTool(toolToEquip)
+					end
+				end
+
+				return
+			end
+
+			local keptNames = getOrderedKeptToolNames()
+
+			for _, toolName in ipairs(keptNames) do
+				local toolList = toolBucket[toolName]
+				if toolList then
+					for _, tool in ipairs(toolList) do
+						tool.Parent = backpack
+					end
+					toolBucket[toolName] = nil
+				end
+			end
+
+			local remainingNames = {}
+			for toolName in pairs(toolBucket) do
+				table.insert(remainingNames, toolName)
+			end
+
+			table.sort(remainingNames, function(a, b)
+				return string.lower(a) < string.lower(b)
+			end)
+
+			for _, toolName in ipairs(remainingNames) do
+				local toolList = toolBucket[toolName]
+				if toolList then
+					for _, tool in ipairs(toolList) do
+						tool.Parent = storage
+					end
+				end
+			end
+
+			task.wait()
+
+			if equippedName and inventoryToolStates[equippedName] then
 				local toolToEquip = backpack:FindFirstChild(equippedName)
 				if toolToEquip then
 					humanoid:EquipTool(toolToEquip)
 				end
 			end
-
-			return
-		end
-
-		local keptNames = getOrderedKeptToolNames()
-
-		for _, toolName in ipairs(keptNames) do
-			local toolList = toolBucket[toolName]
-			if toolList then
-				for _, tool in ipairs(toolList) do
-					tool.Parent = backpack
-				end
-				toolBucket[toolName] = nil
-			end
-		end
-
-		local remainingNames = {}
-		for toolName in pairs(toolBucket) do
-			table.insert(remainingNames, toolName)
-		end
-
-		table.sort(remainingNames, function(a, b)
-			return string.lower(a) < string.lower(b)
 		end)
 
-		for _, toolName in ipairs(remainingNames) do
-			local toolList = toolBucket[toolName]
-			if toolList then
-				for _, tool in ipairs(toolList) do
-					tool.Parent = storage
-				end
-			end
-		end
+		organiserBusy = false
 
-		task.wait()
-
-		if equippedName and inventoryToolStates[equippedName] then
-			local toolToEquip = backpack:FindFirstChild(equippedName)
-			if toolToEquip then
-				humanoid:EquipTool(toolToEquip)
-			end
+		if not ok then
+			warn("Inventory organiser error:", err)
 		end
 	end)
 end
@@ -1351,64 +1370,64 @@ local function hookOrganiser()
 
 	if backpack then
 		table.insert(organiserConnections, backpack.ChildAdded:Connect(function(child)
+			if organiserBusy then
+				return
+			end
+
 			if child:IsA("Tool") then
 				registerToolVisual(child)
 
 				if rebuildWeaponsList then
-					task.defer(function()
-						rebuildWeaponsList()
-					end)
+					task.defer(rebuildWeaponsList)
 				end
 
-				task.defer(function()
-					queueOrganiseInventory()
-				end)
+				queueOrganiseInventory()
 			end
 		end))
 
 		table.insert(organiserConnections, backpack.ChildRemoved:Connect(function(child)
+			if organiserBusy then
+				return
+			end
+
 			if child:IsA("Tool") then
 				if rebuildWeaponsList then
-					task.defer(function()
-						rebuildWeaponsList()
-					end)
+					task.defer(rebuildWeaponsList)
 				end
 
-				task.defer(function()
-					queueOrganiseInventory()
-				end)
+				queueOrganiseInventory()
 			end
 		end))
 	end
 
 	if character then
 		table.insert(organiserConnections, character.ChildAdded:Connect(function(child)
+			if organiserBusy then
+				return
+			end
+
 			if child:IsA("Tool") then
 				registerToolVisual(child)
 
 				if rebuildWeaponsList then
-					task.defer(function()
-						rebuildWeaponsList()
-					end)
+					task.defer(rebuildWeaponsList)
 				end
 
-				task.defer(function()
-					queueOrganiseInventory()
-				end)
+				queueOrganiseInventory()
 			end
 		end))
 
 		table.insert(organiserConnections, character.ChildRemoved:Connect(function(child)
+			if organiserBusy then
+				return
+			end
+
 			if child:IsA("Tool") then
 				if rebuildWeaponsList then
-					task.defer(function()
-						rebuildWeaponsList()
-					end)
+					task.defer(rebuildWeaponsList)
 				end
 
-				task.defer(function()
-					queueOrganiseInventory()
-				end)
+				queueOrganiseInventory()
 			end
 		end))
 	end
@@ -1809,24 +1828,6 @@ LocalPlayer.CharacterAdded:Connect(function(character)
 	applyCustomSpawn(character)
 end)
 
-local backpack = getBackpack()
-if backpack then
-	backpack.ChildAdded:Connect(function(child)
-		if child:IsA("Tool") then
-			registerToolVisual(child)
-			task.defer(rebuildWeaponsList)
-			task.defer(queueOrganiseInventory)
-		end
-	end)
-
-	backpack.ChildRemoved:Connect(function(child)
-		if child:IsA("Tool") then
-			task.defer(rebuildWeaponsList)
-			task.defer(queueOrganiseInventory)
-		end
-	end)
-end
-
 mainFrame:GetPropertyChangedSignal("Position"):Connect(function()
 	screenGui:SetAttribute("SavedPosXScale", mainFrame.Position.X.Scale)
 	screenGui:SetAttribute("SavedPosXOffset", mainFrame.Position.X.Offset)
@@ -1842,9 +1843,11 @@ updateInventoryToggleButton()
 updateSpawnStatus()
 hookOrganiser()
 rebuildWeaponsList()
+
 if selectedSpawnPosition then
 	createOrUpdateSpawnMarker(selectedSpawnPosition)
 end
+
 queueOrganiseInventory()
 showPage(pageButtons[currentPage] and currentPage or "Quick Lock")
 
@@ -1852,17 +1855,6 @@ local currentCharacter = getCharacter(LocalPlayer)
 if currentCharacter then
 	applyCustomSpawn(currentCharacter)
 end
-
-LocalPlayer.CharacterAdded:Connect(function()
-	task.wait(0.35)
-	hookOrganiser()
-
-	if rebuildWeaponsList then
-		rebuildWeaponsList()
-	end
-
-	queueOrganiseInventory()
-end)
 
 updateInventoryToggleButton()
 updateSpawnStatus()
