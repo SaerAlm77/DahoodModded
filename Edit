@@ -973,11 +973,11 @@ local function setDropdownVisible(state)
 	end
 end
 
-local function createOrUpdateSpawnMarker(position)
+local function createOrUpdateSpawnMarker(position, normal)
 	if not spawnMarker then
 		spawnMarker = Instance.new("Part")
 		spawnMarker.Name = "LocalCustomSpawnMarker"
-		spawnMarker.Shape = Enum.PartType.Ball
+		spawnMarker.Shape = Enum.PartType.Cylinder
 		spawnMarker.Material = Enum.Material.Neon
 		spawnMarker.Color = Color3.fromRGB(110, 168, 255)
 		spawnMarker.Transparency = 0.85
@@ -985,11 +985,29 @@ local function createOrUpdateSpawnMarker(position)
 		spawnMarker.CanQuery = false
 		spawnMarker.CanTouch = false
 		spawnMarker.Anchored = true
-		spawnMarker.Size = Vector3.new(3, 3, 3)
+		spawnMarker.Size = Vector3.new(0.01, 3, 3)
 		spawnMarker.Parent = Workspace
 	end
 
-	spawnMarker.Position = position
+	normal = (normal or Vector3.yAxis).Unit
+
+	local forward = Camera.CFrame.LookVector
+	local tangent = forward - forward:Dot(normal) * normal
+	if tangent.Magnitude <= 0.001 then
+		tangent = Vector3.zAxis - Vector3.zAxis:Dot(normal) * normal
+	end
+	tangent = tangent.Unit
+
+	local bitangent = normal:Cross(tangent).Unit
+	local halfThickness = spawnMarker.Size.X * 0.5
+	local groundedPosition = position + normal * halfThickness
+
+	spawnMarker.CFrame = CFrame.fromMatrix(
+		groundedPosition,
+		normal,
+		bitangent,
+		-tangent
+	)
 end
 
 local function removeSpawnMarker()
@@ -1006,7 +1024,11 @@ local function getMouseGroundPosition()
 	local rayParams = RaycastParams.new()
 	rayParams.FilterType = Enum.RaycastFilterType.Exclude
 
-	local exclude = {spawnMarker}
+	local exclude = {}
+	if spawnMarker then
+		table.insert(exclude, spawnMarker)
+	end
+
 	local character = getCharacter(LocalPlayer)
 	if character then
 		table.insert(exclude, character)
@@ -1016,11 +1038,10 @@ local function getMouseGroundPosition()
 
 	local result = Workspace:Raycast(ray.Origin, ray.Direction * 2000, rayParams)
 	if result then
-		local sizeY = spawnMarker and spawnMarker.Size.Y or 3
-		return result.Position + Vector3.new(0, sizeY * 0.5, 0)
+		return result.Position, result.Normal
 	end
 
-	return nil
+	return nil, nil
 end
 
 local function finishSpawnSelection(confirm)
@@ -1057,25 +1078,25 @@ local function beginSpawnSelection()
 
 	spawnSelecting = true
 	mainFrame.Visible = false
-	createOrUpdateSpawnMarker(selectedSpawnPosition or Vector3.new(0, 3, 0))
+	createOrUpdateSpawnMarker(selectedSpawnPosition or Vector3.zero, Vector3.yAxis)
 
 	spawnSelectionConnection = RunService.RenderStepped:Connect(function()
-		local groundPosition = getMouseGroundPosition()
+		local groundPosition, groundNormal = getMouseGroundPosition()
 		if groundPosition then
-			createOrUpdateSpawnMarker(groundPosition)
+			createOrUpdateSpawnMarker(groundPosition, groundNormal)
 		end
 	end)
-
+	
 	spawnConfirmConnection = UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		if gameProcessed then
 			return
 		end
 
 		if input.UserInputType == Enum.UserInputType.MouseButton1 then
-			local groundPosition = getMouseGroundPosition()
+			local groundPosition, groundNormal = getMouseGroundPosition()
 			if groundPosition then
 				selectedSpawnPosition = groundPosition
-				createOrUpdateSpawnMarker(selectedSpawnPosition)
+				createOrUpdateSpawnMarker(selectedSpawnPosition, groundNormal)
 				setGuiStoredSpawn(screenGui, selectedSpawnPosition)
 				updateSpawnStatus()
 				finishSpawnSelection(true)
@@ -1095,19 +1116,74 @@ local function beginSpawnSelection()
 end
 
 local function applyCustomSpawn(character)
-	if not selectedSpawnPosition then
+	if not selectedSpawnPosition or not character then
 		return
 	end
 
-	task.defer(function()
-		local root = character:WaitForChild("HumanoidRootPart", 5)
-		local humanoid = character:FindFirstChildOfClass("Humanoid")
-		if not root or not humanoid or humanoid.Health <= 0 then
+	task.spawn(function()
+		local humanoid = character:WaitForChild("Humanoid", 10)
+		local root = character:WaitForChild("HumanoidRootPart", 10)
+
+		if not humanoid or not root or humanoid.Health <= 0 then
 			return
 		end
 
-		task.wait(0.1)
-		character:PivotTo(CFrame.new(selectedSpawnPosition + Vector3.new(0, 2.5, 0)))
+		local targetPosition = selectedSpawnPosition + Vector3.new(0, 3.5, 0)
+		local targetCFrame = CFrame.new(targetPosition)
+
+		local start = tick()
+		local lastGood = false
+
+		while character.Parent and humanoid.Parent and root.Parent and humanoid.Health > 0 and tick() - start < 2 do
+			root.AssemblyLinearVelocity = Vector3.zero
+			root.AssemblyAngularVelocity = Vector3.zero
+
+			character:PivotTo(targetCFrame)
+			root.CFrame = targetCFrame
+
+			humanoid:Move(Vector3.zero)
+			humanoid:ChangeState(Enum.HumanoidStateType.Landed)
+
+			if (root.Position - targetPosition).Magnitude <= 4 then
+				if lastGood then
+					break
+				end
+				lastGood = true
+			else
+				lastGood = false
+			end
+
+			task.wait(0.08)
+		end
+
+		if character.Parent and root.Parent and humanoid.Health > 0 then
+			root.AssemblyLinearVelocity = Vector3.zero
+			root.AssemblyAngularVelocity = Vector3.zero
+			character:PivotTo(targetCFrame)
+			root.CFrame = targetCFrame
+		end
+	end)
+end
+
+local function hookCharacterForSpawn(character)
+	applyCustomSpawn(character)
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid") or character:WaitForChild("Humanoid", 10)
+	if humanoid then
+		humanoid.Died:Connect(function()
+		end)
+	end
+
+	task.delay(0.35, function()
+		if character and character.Parent then
+			applyCustomSpawn(character)
+		end
+	end)
+
+	task.delay(0.75, function()
+		if character and character.Parent then
+			applyCustomSpawn(character)
+		end
 	end)
 end
 
@@ -1237,7 +1313,7 @@ Players.PlayerAdded:Connect(function()
 end)
 
 LocalPlayer.CharacterAdded:Connect(function(character)
-	applyCustomSpawn(character)
+	hookCharacterForSpawn(character)
 end)
 
 mainFrame:GetPropertyChangedSignal("Position"):Connect(function()
@@ -1257,7 +1333,7 @@ showPage(pageButtons[currentPage] and currentPage or "Quick Lock")
 
 local currentCharacter = getCharacter(LocalPlayer)
 if currentCharacter then
-	applyCustomSpawn(currentCharacter)
+	hookCharacterForSpawn(currentCharacter)
 end
 
 updateSpawnStatus()
