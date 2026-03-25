@@ -20,7 +20,8 @@ local selectedPlayer = nil
 local listeningForKey = false
 local listeningForMacroKey = false
 local macroHeld = false
-
+local inventoryToolOrder = {}
+local defaultKeepOrder = {1, 8, 6, 9}
 local targetBillboard = nil
 local billboardSpinConnection = nil
 local macroConnection = nil
@@ -1122,6 +1123,90 @@ local function getAllToolsByName()
 	return byName
 end
 
+local function getOrderedKeptToolNames()
+	local keptNames = {}
+
+	for toolName, enabled in pairs(inventoryToolStates) do
+		if enabled then
+			table.insert(keptNames, toolName)
+		end
+	end
+
+	table.sort(keptNames, function(a, b)
+		local orderA = inventoryToolOrder[a]
+		local orderB = inventoryToolOrder[b]
+
+		if orderA and orderB then
+			return orderA < orderB
+		elseif orderA then
+			return true
+		elseif orderB then
+			return false
+		end
+
+		return string.lower(a) < string.lower(b)
+	end)
+
+	return keptNames
+end
+
+local function rebuildKeepOrderFromDefault()
+	local keptNames = {}
+
+	for toolName, enabled in pairs(inventoryToolStates) do
+		if enabled then
+			table.insert(keptNames, toolName)
+		end
+	end
+
+	table.sort(keptNames, function(a, b)
+		return string.lower(a) < string.lower(b)
+	end)
+
+	table.clear(inventoryToolOrder)
+
+	for index, toolName in ipairs(keptNames) do
+		local wantedOrder = defaultKeepOrder[index] or index
+		inventoryToolOrder[toolName] = wantedOrder
+	end
+end
+
+local function getToolBucket()
+	local bucket = {}
+
+	local function addTool(tool)
+		if tool and tool:IsA("Tool") then
+			registerToolVisual(tool)
+			bucket[tool.Name] = bucket[tool.Name] or {}
+			table.insert(bucket[tool.Name], tool)
+		end
+	end
+
+	local backpack = getBackpack()
+	local character = getCharacter(LocalPlayer)
+	local storage = getToolStorage()
+
+	if backpack then
+		for _, item in ipairs(backpack:GetChildren()) do
+			addTool(item)
+		end
+	end
+
+	if character then
+		for _, item in ipairs(character:GetChildren()) do
+			addTool(item)
+		end
+	end
+
+	if storage then
+		for _, item in ipairs(storage:GetChildren()) do
+			addTool(item)
+		end
+	end
+
+	return bucket
+end
+
 local function getUniqueToolNames()
 	local names = {}
 	local found = {}
@@ -1148,6 +1233,7 @@ local function queueOrganiseInventory()
 	end
 
 	organiseQueued = true
+
 	task.delay(0.12, function()
 		organiseQueued = false
 
@@ -1160,66 +1246,89 @@ local function queueOrganiseInventory()
 			return
 		end
 
+		rebuildKeepOrderFromDefault()
+
+		local equippedTool = character:FindFirstChildOfClass("Tool")
+		local equippedName = equippedTool and equippedTool.Name or nil
+
+		humanoid:UnequipTools()
+		task.wait()
+
 		for _, item in ipairs(character:GetChildren()) do
 			if item:IsA("Tool") then
-				registerToolVisual(item)
 				item.Parent = backpack
 			end
 		end
 
 		task.wait()
 
-		if not inventoryAutoEnabled then
-			for _, item in ipairs(storage:GetChildren()) do
-				if item:IsA("Tool") then
-					item.Parent = backpack
-				end
-			end
-			return
-		end
-
-		local keepTools = {}
-		local moveTools = {}
+		local toolBucket = getToolBucket()
 
 		for _, item in ipairs(backpack:GetChildren()) do
 			if item:IsA("Tool") then
-				registerToolVisual(item)
+				item.Parent = storage
+			end
+		end
 
-				if inventoryToolStates[item.Name] then
-					table.insert(keepTools, item)
-				else
-					table.insert(moveTools, item)
+		task.wait()
+
+		if not inventoryAutoEnabled then
+			for toolName, toolList in pairs(toolBucket) do
+				table.sort(toolList, function(a, b)
+					return string.lower(a.Name) < string.lower(b.Name)
+				end)
+
+				for _, tool in ipairs(toolList) do
+					tool.Parent = backpack
+				end
+			end
+
+			if equippedName then
+				local toolToEquip = backpack:FindFirstChild(equippedName)
+				if toolToEquip then
+					humanoid:EquipTool(toolToEquip)
+				end
+			end
+
+			return
+		end
+
+		local keptNames = getOrderedKeptToolNames()
+
+		for _, toolName in ipairs(keptNames) do
+			local toolList = toolBucket[toolName]
+			if toolList then
+				for _, tool in ipairs(toolList) do
+					tool.Parent = backpack
+				end
+				toolBucket[toolName] = nil
+			end
+		end
+
+		local remainingNames = {}
+		for toolName in pairs(toolBucket) do
+			table.insert(remainingNames, toolName)
+		end
+
+		table.sort(remainingNames, function(a, b)
+			return string.lower(a) < string.lower(b)
+		end)
+
+		for _, toolName in ipairs(remainingNames) do
+			local toolList = toolBucket[toolName]
+			if toolList then
+				for _, tool in ipairs(toolList) do
+					tool.Parent = storage
 				end
 			end
 		end
 
-		for _, item in ipairs(storage:GetChildren()) do
-			if item:IsA("Tool") then
-				registerToolVisual(item)
+		task.wait()
 
-				if inventoryToolStates[item.Name] then
-					table.insert(keepTools, item)
-				end
-			end
-		end
-
-		table.sort(keepTools, function(a, b)
-			return string.lower(a.Name) < string.lower(b.Name)
-		end)
-
-		table.sort(moveTools, function(a, b)
-			return string.lower(a.Name) < string.lower(b.Name)
-		end)
-
-		for _, tool in ipairs(moveTools) do
-			if tool.Parent == backpack then
-				tool.Parent = storage
-			end
-		end
-
-		for _, tool in ipairs(keepTools) do
-			if tool.Parent ~= backpack then
-				tool.Parent = backpack
+		if equippedName and inventoryToolStates[equippedName] then
+			local toolToEquip = backpack:FindFirstChild(equippedName)
+			if toolToEquip then
+				humanoid:EquipTool(toolToEquip)
 			end
 		end
 	end)
@@ -1383,6 +1492,33 @@ rebuildWeaponsList = function()
 
 		check.MouseButton1Click:Connect(function()
 			inventoryToolStates[toolName] = not inventoryToolStates[toolName]
+
+			if inventoryToolStates[toolName] then
+				local usedOrders = {}
+				for _, orderValue in pairs(inventoryToolOrder) do
+					usedOrders[orderValue] = true
+				end
+
+				local assigned = false
+				for _, slotNumber in ipairs(defaultKeepOrder) do
+					if not usedOrders[slotNumber] then
+						inventoryToolOrder[toolName] = slotNumber
+						assigned = true
+						break
+					end
+				end
+
+				if not assigned then
+					local biggest = 0
+					for _, orderValue in pairs(inventoryToolOrder) do
+						biggest = math.max(biggest, orderValue)
+					end
+					inventoryToolOrder[toolName] = biggest + 1
+				end
+			else
+				inventoryToolOrder[toolName] = nil
+			end
+
 			updateSelectedWeaponsAttribute(screenGui)
 			rebuildWeaponsList()
 			queueOrganiseInventory()
