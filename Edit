@@ -33,6 +33,7 @@ local spawnSelecting = false
 local selectedSpawnPosition = nil
 local inventoryAutoEnabled = false
 local inventoryToolStates = {}
+local inventoryToolIcons = {}
 local organiseQueued = false
 local currentPage = "Quick Lock"
 
@@ -53,7 +54,7 @@ local colors = {
 }
 
 local savedSettings = {
-	Position = UDim2.new(0.5, -420, 0.5, -250),
+	Position = UDim2.fromScale(0.5, 0.5),
 	Scale = 1,
 	LockKey = Enum.KeyCode.Q.Name,
 	MacroKey = Enum.KeyCode.F.Name,
@@ -68,8 +69,6 @@ local existingGui = PlayerGui:FindFirstChild(GUI_NAME)
 if existingGui then
 	local oldMain = existingGui:FindFirstChild("MainFrame")
 	if oldMain then
-		savedSettings.Position = oldMain.Position
-
 		local oldScale = oldMain:FindFirstChildOfClass("UIScale")
 		if oldScale then
 			savedSettings.Scale = oldScale.Scale
@@ -148,6 +147,16 @@ end
 
 local function getBackpack()
 	return LocalPlayer:FindFirstChildOfClass("Backpack")
+end
+
+local function getToolStorage()
+	local storage = LocalPlayer:FindFirstChild("ToolStorage")
+	if not storage then
+		storage = Instance.new("Folder")
+		storage.Name = "ToolStorage"
+		storage.Parent = LocalPlayer
+	end
+	return storage
 end
 
 local function isValidTarget(player)
@@ -426,6 +435,7 @@ mainFrame.BackgroundColor3 = colors.Background
 mainFrame.BorderSizePixel = 0
 mainFrame.Active = true
 mainFrame.Parent = screenGui
+
 createRound(mainFrame, 16)
 createStroke(mainFrame, colors.Stroke, 1)
 
@@ -457,6 +467,51 @@ local topBar = Instance.new("Frame")
 topBar.BackgroundTransparency = 1
 topBar.Size = UDim2.new(1, 0, 0, 56)
 topBar.Parent = mainFrame
+
+local dragging = false
+local dragInput = nil
+local dragStart = nil
+local startPosition = nil
+
+local function updateDrag(input)
+	if not dragging or not dragStart or not startPosition then
+		return
+	end
+
+	local delta = input.Position - dragStart
+	mainFrame.Position = UDim2.new(
+		startPosition.X.Scale,
+		startPosition.X.Offset + delta.X,
+		startPosition.Y.Scale,
+		startPosition.Y.Offset + delta.Y
+	)
+end
+
+topBar.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		dragging = true
+		dragStart = input.Position
+		startPosition = mainFrame.Position
+
+		input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then
+				dragging = false
+			end
+		end)
+	end
+end)
+
+topBar.InputChanged:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseMovement then
+		dragInput = input
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if input == dragInput and dragging then
+		updateDrag(input)
+	end
+end)
 
 local title = Instance.new("TextLabel")
 title.Name = "Title"
@@ -889,7 +944,7 @@ spawnInfoLabel.Parent = spawnTopCard
 
 local spawnStatusLabel = Instance.new("TextLabel")
 spawnStatusLabel.Size = UDim2.new(1, -28, 0, 18)
-spawnStatusLabel.Position = UDim2.new(0, 14, 0, 58)
+spawnStatusLabel.Position = UDim2.new(0, 14, 0, 55)
 spawnStatusLabel.BackgroundTransparency = 1
 spawnStatusLabel.Text = "Spawn: Default"
 spawnStatusLabel.TextColor3 = colors.Muted
@@ -983,7 +1038,7 @@ local function rebuildDropdown()
 
 	local autoButton = Instance.new("TextButton")
 	autoButton.Size = UDim2.new(1, -2, 0, 30)
-	autoButton.Text = "Auto nearest to mouse"
+	autoButton.Text = "DEFAULT"
 	autoButton.TextColor3 = colors.Text
 	autoButton.TextSize = 13
 	autoButton.Font = Enum.Font.Gotham
@@ -1029,28 +1084,55 @@ local function setDropdownVisible(state)
 	end
 end
 
-local function getUniqueToolNames()
-	local names = {}
-	local found = {}
+local function registerToolVisual(tool)
+	if not tool or not tool:IsA("Tool") then
+		return
+	end
 
+	if tool.TextureId and tool.TextureId ~= "" then
+		inventoryToolIcons[tool.Name] = tool.TextureId
+	end
+end
+
+local function getAllToolsByName()
+	local byName = {}
 	local backpack = getBackpack()
-	if backpack then
-		for _, item in ipairs(backpack:GetChildren()) do
-			if item:IsA("Tool") and not found[item.Name] then
-				found[item.Name] = true
-				table.insert(names, item.Name)
-			end
+	local character = getCharacter(LocalPlayer)
+
+	local function addTool(tool)
+		if tool and tool:IsA("Tool") then
+			registerToolVisual(tool)
+			byName[tool.Name] = byName[tool.Name] or {}
+			table.insert(byName[tool.Name], tool)
 		end
 	end
 
-	local character = getCharacter(LocalPlayer)
+	if backpack then
+		for _, item in ipairs(backpack:GetChildren()) do
+			addTool(item)
+		end
+	end
+
 	if character then
 		for _, item in ipairs(character:GetChildren()) do
-			if item:IsA("Tool") and not found[item.Name] then
-				found[item.Name] = true
-				table.insert(names, item.Name)
-			end
+			addTool(item)
 		end
+	end
+
+	return byName
+end
+
+local function getUniqueToolNames()
+	local names = {}
+	local found = {}
+	local byName = getAllToolsByName()
+
+	for toolName in pairs(byName) do
+		found[toolName] = true
+	end
+
+	for toolName in pairs(found) do
+		table.insert(names, toolName)
 	end
 
 	table.sort(names, function(a, b)
@@ -1066,50 +1148,77 @@ local function queueOrganiseInventory()
 	end
 
 	organiseQueued = true
-	task.delay(0.08, function()
+	task.delay(0.12, function()
 		organiseQueued = false
 
-		if not inventoryAutoEnabled then
-			return
-		end
-
 		local backpack = getBackpack()
-		if not backpack then
+		local character = getCharacter(LocalPlayer)
+		local humanoid = getHumanoid(LocalPlayer)
+		local storage = getToolStorage()
+
+		if not backpack or not character or not humanoid or humanoid.Health <= 0 then
 			return
 		end
 
-		local keepList = {}
-		local restList = {}
+		for _, item in ipairs(character:GetChildren()) do
+			if item:IsA("Tool") then
+				registerToolVisual(item)
+				item.Parent = backpack
+			end
+		end
+
+		task.wait()
+
+		if not inventoryAutoEnabled then
+			for _, item in ipairs(storage:GetChildren()) do
+				if item:IsA("Tool") then
+					item.Parent = backpack
+				end
+			end
+			return
+		end
+
+		local keepTools = {}
+		local moveTools = {}
 
 		for _, item in ipairs(backpack:GetChildren()) do
 			if item:IsA("Tool") then
+				registerToolVisual(item)
+
 				if inventoryToolStates[item.Name] then
-					table.insert(keepList, item)
+					table.insert(keepTools, item)
 				else
-					table.insert(restList, item)
+					table.insert(moveTools, item)
 				end
 			end
 		end
 
-		table.sort(keepList, function(a, b)
+		for _, item in ipairs(storage:GetChildren()) do
+			if item:IsA("Tool") then
+				registerToolVisual(item)
+
+				if inventoryToolStates[item.Name] then
+					table.insert(keepTools, item)
+				end
+			end
+		end
+
+		table.sort(keepTools, function(a, b)
 			return string.lower(a.Name) < string.lower(b.Name)
 		end)
 
-		table.sort(restList, function(a, b)
+		table.sort(moveTools, function(a, b)
 			return string.lower(a.Name) < string.lower(b.Name)
 		end)
 
-		local ordered = {}
-		for _, tool in ipairs(keepList) do
-			table.insert(ordered, tool)
-		end
-		for _, tool in ipairs(restList) do
-			table.insert(ordered, tool)
-		end
-
-		for _, tool in ipairs(ordered) do
+		for _, tool in ipairs(moveTools) do
 			if tool.Parent == backpack then
-				tool.Parent = nil
+				tool.Parent = storage
+			end
+		end
+
+		for _, tool in ipairs(keepTools) do
+			if tool.Parent ~= backpack then
 				tool.Parent = backpack
 			end
 		end
@@ -1123,6 +1232,8 @@ local function disconnectOrganiserConnections()
 	table.clear(organiserConnections)
 end
 
+local rebuildWeaponsList
+
 local function hookOrganiser()
 	disconnectOrganiserConnections()
 
@@ -1132,13 +1243,31 @@ local function hookOrganiser()
 	if backpack then
 		table.insert(organiserConnections, backpack.ChildAdded:Connect(function(child)
 			if child:IsA("Tool") then
-				queueOrganiseInventory()
+				registerToolVisual(child)
+
+				if rebuildWeaponsList then
+					task.defer(function()
+						rebuildWeaponsList()
+					end)
+				end
+
+				task.defer(function()
+					queueOrganiseInventory()
+				end)
 			end
 		end))
 
 		table.insert(organiserConnections, backpack.ChildRemoved:Connect(function(child)
 			if child:IsA("Tool") then
-				task.defer(queueOrganiseInventory)
+				if rebuildWeaponsList then
+					task.defer(function()
+						rebuildWeaponsList()
+					end)
+				end
+
+				task.defer(function()
+					queueOrganiseInventory()
+				end)
 			end
 		end))
 	end
@@ -1146,13 +1275,31 @@ local function hookOrganiser()
 	if character then
 		table.insert(organiserConnections, character.ChildAdded:Connect(function(child)
 			if child:IsA("Tool") then
-				task.defer(queueOrganiseInventory)
+				registerToolVisual(child)
+
+				if rebuildWeaponsList then
+					task.defer(function()
+						rebuildWeaponsList()
+					end)
+				end
+
+				task.defer(function()
+					queueOrganiseInventory()
+				end)
 			end
 		end))
 
 		table.insert(organiserConnections, character.ChildRemoved:Connect(function(child)
 			if child:IsA("Tool") then
-				task.defer(queueOrganiseInventory)
+				if rebuildWeaponsList then
+					task.defer(function()
+						rebuildWeaponsList()
+					end)
+				end
+
+				task.defer(function()
+					queueOrganiseInventory()
+				end)
 			end
 		end))
 	end
@@ -1166,7 +1313,7 @@ local function clearWeaponRows()
 	end
 end
 
-local function rebuildWeaponsList()
+rebuildWeaponsList = function()
 	clearWeaponRows()
 
 	local names = getUniqueToolNames()
@@ -1190,16 +1337,32 @@ local function rebuildWeaponsList()
 
 	for _, toolName in ipairs(names) do
 		local row = Instance.new("Frame")
-		row.Size = UDim2.new(1, -8, 0, 38)
+		row.Size = UDim2.new(1, -8, 0, 44)
 		row.BackgroundColor3 = colors.Panel2
 		row.BorderSizePixel = 0
 		row.Parent = weaponsList
 		createRound(row, 9)
 		createStroke(row, colors.Stroke, 1)
 
+		local iconHolder = Instance.new("Frame")
+		iconHolder.Size = UDim2.new(0, 30, 0, 30)
+		iconHolder.Position = UDim2.new(0, 8, 0.5, -15)
+		iconHolder.BackgroundColor3 = colors.Card
+		iconHolder.BorderSizePixel = 0
+		iconHolder.Parent = row
+		createRound(iconHolder, 8)
+
+		local icon = Instance.new("ImageLabel")
+		icon.BackgroundTransparency = 1
+		icon.Size = UDim2.new(1, -6, 1, -6)
+		icon.Position = UDim2.new(0, 3, 0, 3)
+		icon.Image = inventoryToolIcons[toolName] or ""
+		icon.ScaleType = Enum.ScaleType.Fit
+		icon.Parent = iconHolder
+
 		local check = Instance.new("TextButton")
 		check.Size = UDim2.new(0, 78, 0, 26)
-		check.Position = UDim2.new(0, 8, 0.5, -13)
+		check.Position = UDim2.new(1, -86, 0.5, -13)
 		check.Text = inventoryToolStates[toolName] and "Keep" or "Move"
 		check.TextColor3 = colors.Text
 		check.TextSize = 12
@@ -1208,8 +1371,8 @@ local function rebuildWeaponsList()
 		styleInteractive(check, inventoryToolStates[toolName] and colors.Green or colors.Red, inventoryToolStates[toolName] and colors.Green or colors.Red)
 
 		local nameLabel = Instance.new("TextLabel")
-		nameLabel.Size = UDim2.new(1, -100, 1, 0)
-		nameLabel.Position = UDim2.new(0, 94, 0, 0)
+		nameLabel.Size = UDim2.new(1, -140, 1, 0)
+		nameLabel.Position = UDim2.new(0, 46, 0, 0)
 		nameLabel.BackgroundTransparency = 1
 		nameLabel.Text = toolName
 		nameLabel.TextColor3 = colors.Text
@@ -1235,8 +1398,8 @@ local function createOrUpdateSpawnMarker(position)
 		spawnMarker.Name = "LocalCustomSpawnMarker"
 		spawnMarker.Shape = Enum.PartType.Ball
 		spawnMarker.Material = Enum.Material.Neon
-		spawnMarker.Color = Color3.fromRGB(255, 50, 50)
-		spawnMarker.Transparency = 0.35
+		spawnMarker.Color = Color3.fromRGB(110, 168, 255)
+		spawnMarker.Transparency = 0.85
 		spawnMarker.CanCollide = false
 		spawnMarker.CanQuery = false
 		spawnMarker.CanTouch = false
@@ -1514,13 +1677,16 @@ local backpack = getBackpack()
 if backpack then
 	backpack.ChildAdded:Connect(function(child)
 		if child:IsA("Tool") then
+			registerToolVisual(child)
 			task.defer(rebuildWeaponsList)
+			task.defer(queueOrganiseInventory)
 		end
 	end)
 
 	backpack.ChildRemoved:Connect(function(child)
 		if child:IsA("Tool") then
 			task.defer(rebuildWeaponsList)
+			task.defer(queueOrganiseInventory)
 		end
 	end)
 end
@@ -1550,3 +1716,23 @@ local currentCharacter = getCharacter(LocalPlayer)
 if currentCharacter then
 	applyCustomSpawn(currentCharacter)
 end
+
+LocalPlayer.CharacterAdded:Connect(function()
+	task.wait(0.35)
+	hookOrganiser()
+
+	if rebuildWeaponsList then
+		rebuildWeaponsList()
+	end
+
+	queueOrganiseInventory()
+end)
+
+updateInventoryToggleButton()
+updateSpawnStatus()
+updateSelectedLabel()
+rebuildWeaponsList()
+hookOrganiser()
+queueOrganiseInventory()
+showPage(currentPage)
+updateGuiScale()
