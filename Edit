@@ -68,6 +68,7 @@ local savedSettings = {
 }
 
 local existingGui = PlayerGui:FindFirstChild(GUI_NAME)
+
 if existingGui then
 	local oldMain = existingGui:FindFirstChild("MainFrame")
 	if oldMain then
@@ -116,7 +117,12 @@ if existingGui then
 		savedSettings.Page = oldPage
 	end
 
-	existingGui:Destroy()
+	existingGui.Enabled = false
+	task.defer(function()
+		if existingGui and existingGui.Parent then
+			existingGui:Destroy()
+		end
+	end)
 end
 
 if Enum.KeyCode[savedSettings.LockKey] then
@@ -1228,6 +1234,8 @@ local function getUniqueToolNames()
 	return names
 end
 
+local lastOrganiseClock = 0
+
 local function queueOrganiseInventory()
 	if organiseQueued or organiserBusy then
 		return
@@ -1235,10 +1243,14 @@ local function queueOrganiseInventory()
 
 	organiseQueued = true
 
-	task.delay(0.12, function()
+	task.delay(0.2, function()
 		organiseQueued = false
 
 		if organiserBusy then
+			return
+		end
+
+		if os.clock() - lastOrganiseClock < 0.35 then
 			return
 		end
 
@@ -1252,6 +1264,7 @@ local function queueOrganiseInventory()
 		end
 
 		organiserBusy = true
+		lastOrganiseClock = os.clock()
 
 		local ok, err = pcall(function()
 			local equippedTool = character:FindFirstChildOfClass("Tool")
@@ -1290,8 +1303,12 @@ local function queueOrganiseInventory()
 
 				for _, toolName in ipairs(allNames) do
 					local toolList = toolBucket[toolName]
-					for _, tool in ipairs(toolList) do
-						tool.Parent = backpack
+					if toolList then
+						for _, tool in ipairs(toolList) do
+							if tool.Parent ~= backpack then
+								tool.Parent = backpack
+							end
+						end
 					end
 				end
 
@@ -1306,31 +1323,28 @@ local function queueOrganiseInventory()
 			end
 
 			local keptNames = getOrderedKeptToolNames()
+			local keptSet = {}
+			for _, toolName in ipairs(keptNames) do
+				keptSet[toolName] = true
+			end
 
 			for _, toolName in ipairs(keptNames) do
 				local toolList = toolBucket[toolName]
 				if toolList then
 					for _, tool in ipairs(toolList) do
-						tool.Parent = backpack
+						if tool.Parent ~= backpack then
+							tool.Parent = backpack
+						end
 					end
-					toolBucket[toolName] = nil
 				end
 			end
 
-			local remainingNames = {}
-			for toolName in pairs(toolBucket) do
-				table.insert(remainingNames, toolName)
-			end
-
-			table.sort(remainingNames, function(a, b)
-				return string.lower(a) < string.lower(b)
-			end)
-
-			for _, toolName in ipairs(remainingNames) do
-				local toolList = toolBucket[toolName]
-				if toolList then
+			for toolName, toolList in pairs(toolBucket) do
+				if not keptSet[toolName] then
 					for _, tool in ipairs(toolList) do
-						tool.Parent = storage
+						if tool.Parent ~= storage then
+							tool.Parent = storage
+						end
 					end
 				end
 			end
@@ -1345,9 +1359,12 @@ local function queueOrganiseInventory()
 			end
 		end)
 
-		organiserBusy = false
+		task.delay(0.25, function()
+			organiserBusy = false
+		end)
 
 		if not ok then
+			organiserBusy = false
 			warn("Inventory organiser error:", err)
 		end
 	end)
@@ -1837,13 +1854,6 @@ end)
 
 Camera:GetPropertyChangedSignal("ViewportSize"):Connect(updateGuiScale)
 
-updateGuiScale()
-updateSelectedLabel()
-updateInventoryToggleButton()
-updateSpawnStatus()
-hookOrganiser()
-rebuildWeaponsList()
-
 if selectedSpawnPosition then
 	createOrUpdateSpawnMarker(selectedSpawnPosition)
 end
@@ -1856,7 +1866,6 @@ if currentCharacter then
 	applyCustomSpawn(currentCharacter)
 end
 
-updateInventoryToggleButton()
 updateSpawnStatus()
 updateSelectedLabel()
 rebuildWeaponsList()
@@ -1864,3 +1873,4 @@ hookOrganiser()
 queueOrganiseInventory()
 showPage(currentPage)
 updateGuiScale()
+updateInventoryToggleButton()
